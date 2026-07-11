@@ -2,6 +2,8 @@ import type { CardEntry, PriceQuote, PriceRange } from '../lib/types'
 import { loadSettings } from '../lib/types'
 import { fetchPokemonTcgPrices } from './pokemontcg'
 import { fetchTcgdexPrices } from './tcgdex'
+import { fetchJustTcgPrices } from './justtcg'
+import { fetchPokemonPriceTrackerPrices } from './pokemonpricetracker'
 import { fetchPriceChartingPrices } from './pricecharting'
 import { fetchEbayPrices } from './ebay'
 
@@ -11,6 +13,8 @@ export async function fetchAllPrices(card: CardEntry): Promise<PriceQuote[]> {
   const results = await Promise.allSettled([
     fetchPokemonTcgPrices(card, settings),
     fetchTcgdexPrices(card),
+    fetchJustTcgPrices(card, settings),
+    fetchPokemonPriceTrackerPrices(card, settings),
     fetchPriceChartingPrices(card, settings),
     fetchEbayPrices(card, settings),
   ])

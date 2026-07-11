@@ -34,6 +34,8 @@ export const en = {
   settingsIntro:
     'Free sources (Pokemon TCG API, TCGdex) work out of the box. Add keys to unlock more sources — keys are stored only in this browser.',
   ptcgKeyLabel: 'Pokemon TCG API key (free — raises rate limit)',
+  justTcgKeyLabel: 'JustTCG API key (free tier — EN + Japanese TCGplayer prices)',
+  pptKeyLabel: 'PokemonPriceTracker API key (free tier — EN + Japanese prices)',
   pcKeyLabel: 'PriceCharting API key (paid — best for Japanese & graded)',
   ebayKeyLabel: 'eBay Browse API OAuth token (listing-based ranges)',
   corsProxyLabel: 'CORS proxy URL prefix (needed for PriceCharting/eBay in-browser)',

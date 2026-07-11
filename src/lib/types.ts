@@ -78,6 +78,8 @@ export interface CollectionEntry {
 
 export interface Settings {
   pokemonTcgApiKey?: string
+  justTcgKey?: string
+  pokemonPriceTrackerKey?: string
   priceChartingKey?: string
   ebayToken?: string
   /** Optional CORS proxy prefix for sources that don't send CORS headers */

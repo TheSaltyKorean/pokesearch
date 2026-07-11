@@ -26,6 +26,8 @@ export function SettingsView() {
       <h2>{t.settingsTitle}</h2>
       <p className="muted">{t.settingsIntro}</p>
       {field('pokemonTcgApiKey', t.ptcgKeyLabel)}
+      {field('justTcgKey', t.justTcgKeyLabel, 'free key: justtcg.com → dashboard')}
+      {field('pokemonPriceTrackerKey', t.pptKeyLabel, 'free key: pokemonpricetracker.com → account → API')}
       {field('priceChartingKey', t.pcKeyLabel)}
       {field('ebayToken', t.ebayKeyLabel)}
       {field('corsProxy', t.corsProxyLabel, 'https://your-proxy.example.com/?url=')}

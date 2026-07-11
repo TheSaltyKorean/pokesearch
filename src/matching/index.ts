@@ -52,7 +52,9 @@ export function matchHash(probe: Uint8Array, topK = 8): MatchResult[] {
       results.push({
         card: idx.cards[i],
         distance,
-        confidence: Math.max(0, 1 - distance / 48),
+        // Scaled to the display cutoff (60) so surfaced weak candidates
+        // show a small-but-nonzero confidence instead of a misleading 0%
+        confidence: Math.max(0, 1 - distance / 64),
       })
     }
   }
@@ -107,18 +109,22 @@ export function matchImage(
   const probes: Uint8Array[] = []
   // Whole frame (covers already-tight crops that aren't card aspect)
   probes.push(cardHash(src, width, height))
-  // Jitter grid: offsets ±3% and scales 0.94/1.0/1.06 around the base rect
+  // Jitter grid: offsets ±3% at every scale. Note the camera path passes an
+  // already-tight 63:88 guide crop, where only the scaled-down probes have
+  // room to shift — so offsets must combine with scaling, and out-of-bounds
+  // probes are simply skipped.
   const offsets = [-0.03, 0, 0.03]
-  const scales = [0.94, 1, 1.06]
+  const scales = [0.88, 0.94, 1, 1.06]
   for (const s of scales) {
     const jw = cw * s
     const jh = ch * s
     for (const ox of offsets) {
       for (const oy of offsets) {
-        if (s !== 1 && (ox !== 0 || oy !== 0)) continue // scale probes only centered
         const sx = cx + (cw - jw) / 2 + ox * cw
         const sy = cy + (ch - jh) / 2 + oy * ch
         if (sx < 0 || sy < 0 || sx + jw > width || sy + jh > height) continue
+        // Skip the probe identical to the whole-frame hash already pushed
+        if (s === 1 && ox === 0 && oy === 0 && cx === 0 && cy === 0) continue
         probes.push(hashCrop(src, sx, sy, jw, jh))
       }
     }

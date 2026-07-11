@@ -195,11 +195,13 @@ async function main() {
     /* fresh index */
   }
 
+  let setsLoaded = 0
   for (const setId of sets) {
     console.log(`\n[${LANG}/${setId}] fetching card list…`)
     let cards
     try {
       cards = await loadSetCards(setId)
+      setsLoaded++
     } catch (e) {
       console.warn(`[${LANG}/${setId}] skipped: ${e.message}`)
       continue
@@ -228,6 +230,13 @@ async function main() {
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker))
     console.log(`[${LANG}/${setId}] done (${done}/${cards.length})`)
+  }
+
+  // Don't silently publish an empty/unchanged index when every requested set
+  // failed (bad set id, TCGdex outage) — skipping is only OK within --sets all.
+  if (setsLoaded === 0) {
+    console.error('All requested sets failed to load; not writing index.')
+    process.exit(1)
   }
 
   const all = [...existing.values()]

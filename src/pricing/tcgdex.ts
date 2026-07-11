@@ -16,22 +16,24 @@ export async function fetchTcgdexPrices(card: CardEntry): Promise<PriceQuote[]> 
 
   const cm = pricing.cardmarket
   if (cm) {
-    for (const [variant, key] of [
+    // Cardmarket blocks expose "" (normal) and "-holo" key suffixes. The
+    // `trend` field is frequently an outlier, so the range is built from the
+    // rolling averages instead.
+    for (const [variant, sfx] of [
       ['normal', ''],
-      ['reverseHolofoil', '-reverse'],
+      ['holofoil', '-holo'],
     ] as const) {
-      const trend = cm[`trend${key ? '-reverse' : ''}`] ?? cm.trend
-      const low = cm[`low${key}`] ?? (variant === 'normal' ? cm.low : undefined)
-      const avg30 = cm[`avg30${key}`] ?? (variant === 'normal' ? cm.avg30 : undefined)
-      if (variant === 'reverseHolofoil' && cm['trend-reverse'] == null) continue
-      if (trend == null && low == null) continue
+      const low = cm[`low${sfx}`]
+      const avgs = [cm[`avg1${sfx}`], cm[`avg7${sfx}`], cm[`avg30${sfx}`], cm[`avg${sfx}`]]
+        .filter((v: unknown): v is number => typeof v === 'number' && v > 0)
+      if (low == null && avgs.length === 0) continue
       quotes.push({
         source: 'Cardmarket (TCGdex)',
         variant,
         currency: cm.unit ?? 'EUR',
-        low: low ?? undefined,
-        mid: trend ?? undefined,
-        high: avg30 ?? undefined,
+        low: low ?? Math.min(...avgs),
+        mid: cm[`avg30${sfx}`] ?? cm[`avg${sfx}`] ?? avgs[0],
+        high: avgs.length ? Math.max(...avgs) : undefined,
         updatedAt: cm.updated ?? now,
       })
     }

@@ -1,3 +1,5 @@
+import type { VariantKey } from '../lib/types'
+
 /** Shared helpers for matching our catalog cards against external price APIs. */
 
 /**
@@ -17,12 +19,24 @@ export function normalizeCardNumber(n: string | undefined): string {
  */
 export function setNamesOverlap(a: string | undefined, b: string | undefined): boolean {
   if (!a || !b) return false
+  // Keep letters/digits of every script (set names can be Japanese etc.);
+  // strip only punctuation and symbols.
   const norm = (s: string) =>
-    s.toLowerCase().replace(/[^a-z0-9\s]/gi, ' ').replace(/\s+/g, ' ').trim()
+    s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim()
   const na = norm(a)
   const nb = norm(b)
   if (!na || !nb) return false
   if (na === nb) return true
   const [shorter, longer] = na.length <= nb.length ? [na, nb] : [nb, na]
   return longer.includes(shorter) && !/\d/.test(longer.replace(shorter, ''))
+}
+
+/** Map an external "printing" label onto our variant keys. */
+export function printingToVariant(printing: string | undefined): VariantKey | string {
+  const p = (printing ?? 'Normal').toLowerCase()
+  if (p.includes('1st')) return p.includes('holo') ? '1stEditionHolofoil' : '1stEditionNormal'
+  if (p.includes('reverse')) return 'reverseHolofoil'
+  if (p.includes('holo') || p.includes('foil')) return 'holofoil'
+  if (p === 'unlimited') return 'unlimited'
+  return 'normal'
 }

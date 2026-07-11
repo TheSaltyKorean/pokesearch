@@ -1,5 +1,5 @@
 import type { CardEntry, PriceQuote, Settings } from '../lib/types'
-import { normalizeCardNumber, setNamesOverlap } from './match'
+import { normalizeCardNumber, printingToVariant, setNamesOverlap } from './match'
 
 const API = 'https://www.pokemonpricetracker.com/api/v2'
 
@@ -14,7 +14,7 @@ interface PptCard {
   setName?: string
   cardNumber?: string
   tcgPlayerUrl?: string
-  prices?: { market?: number; low?: number; lastUpdated?: string }
+  prices?: { market?: number; low?: number; primaryPrinting?: string; lastUpdated?: string }
   variants?: Record<string, PptVariant>
 }
 
@@ -34,7 +34,10 @@ export async function fetchPokemonPriceTrackerPrices(
   if (!key) return []
   if (card.lang !== 'en' && card.lang !== 'ja') return []
 
-  const params = new URLSearchParams({ search: card.name, limit: '5' })
+  // Filter by set in the request itself (their `set` param matches loosely,
+  // e.g. "temporal" → Temporal Forces): common names have far more hits than
+  // one page, and every returned card bills a credit.
+  const params = new URLSearchParams({ search: card.name, set: card.set, limit: '5' })
   if (card.lang === 'ja') params.set('language', 'japanese')
   const res = await fetch(`${API}/cards?${params}`, {
     headers: { Authorization: `Bearer ${key}` },
@@ -58,20 +61,9 @@ export async function fetchPokemonPriceTrackerPrices(
   const quotes: PriceQuote[] = []
   for (const [printing, v] of Object.entries(match.variants ?? {})) {
     if (!finite(v.marketPrice) && !finite(v.lowPrice)) continue
-    const p = printing.toLowerCase()
-    // "1st" must win over the generic holo check so 1st-edition premiums
-    // don't get averaged into unlimited holofoil.
     quotes.push({
       source: 'PokemonPriceTracker',
-      variant: p.includes('1st')
-        ? p.includes('holo')
-          ? '1stEditionHolofoil'
-          : '1stEditionNormal'
-        : p.includes('reverse')
-          ? 'reverseHolofoil'
-          : p.includes('holo') || p.includes('foil')
-            ? 'holofoil'
-            : 'normal',
+      variant: printingToVariant(v.printing ?? printing),
       currency: 'USD',
       low: finite(v.lowPrice) ? v.lowPrice : undefined,
       mid: finite(v.marketPrice) ? v.marketPrice : v.lowPrice,
@@ -82,7 +74,7 @@ export async function fetchPokemonPriceTrackerPrices(
   if (quotes.length === 0 && (finite(match.prices?.market) || finite(match.prices?.low))) {
     quotes.push({
       source: 'PokemonPriceTracker',
-      variant: 'normal',
+      variant: printingToVariant(match.prices?.primaryPrinting),
       currency: 'USD',
       low: finite(match.prices?.low) ? match.prices!.low : undefined,
       mid: finite(match.prices?.market) ? match.prices!.market : match.prices?.low,

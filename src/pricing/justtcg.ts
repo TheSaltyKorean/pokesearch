@@ -1,5 +1,5 @@
-import type { CardEntry, PriceQuote, Settings, VariantKey } from '../lib/types'
-import { normalizeCardNumber, setNamesOverlap } from './match'
+import type { CardEntry, PriceQuote, Settings } from '../lib/types'
+import { normalizeCardNumber, printingToVariant, setNamesOverlap } from './match'
 
 const API = 'https://api.justtcg.com/v1'
 
@@ -92,15 +92,6 @@ async function resolveJaSet(key: string, game: string, setId: string): Promise<s
   )?.id
 }
 
-function printingToVariant(printing: string | undefined): VariantKey | string {
-  const p = (printing ?? 'Normal').toLowerCase()
-  if (p.includes('1st')) return p.includes('holo') ? '1stEditionHolofoil' : '1stEditionNormal'
-  if (p.includes('reverse')) return 'reverseHolofoil'
-  if (p.includes('holo') || p.includes('foil')) return 'holofoil'
-  if (p === 'unlimited') return 'unlimited'
-  return 'normal'
-}
-
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
 
 function variantsToQuotes(match: JustTcgCard): PriceQuote[] {
@@ -156,16 +147,16 @@ export async function fetchJustTcgPrices(
     cards = ((await apiGet(key, `/cards?${params}`)) as { data?: JustTcgCard[] }).data ?? []
   }
 
-  // Same name can appear across many sets; a collector-number match is
-  // required (no quote is better than the wrong card's quote), and a
-  // set-name match picks between number-collisions.
+  // Same name+number pairs repeat across sets, so both a collector-number
+  // match and a set match are required — no quote is better than the wrong
+  // card's quote. The JA path is already scoped to the exact set by the
+  // request; EN must find a set-name overlap among the name-search results.
   const wantNumber = normalizeCardNumber(card.number)
   const numbered = cards.filter((c) => normalizeCardNumber(c.number) === wantNumber)
-  if (numbered.length === 0) return []
   const match =
     card.lang === 'ja'
-      ? numbered[0] // already scoped to the exact set
-      : (numbered.find((c) => setNamesOverlap(c.set_name, card.set)) ?? numbered[0])
-  if (!match.variants?.length) return []
+      ? numbered[0]
+      : numbered.find((c) => setNamesOverlap(c.set_name, card.set))
+  if (!match?.variants?.length) return []
   return variantsToQuotes(match)
 }

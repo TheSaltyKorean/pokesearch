@@ -31,6 +31,7 @@ export const en = {
   exportBtn: 'Export JSON',
   importBtn: 'Import JSON',
   settingsTitle: 'Settings & API keys',
+  currencyLabel: 'Display currency (prices are converted using daily ECB rates)',
   settingsIntro:
     'Free sources (Pokemon TCG API, TCGdex) work out of the box. Add keys to unlock more sources — keys are stored only in this browser.',
   ptcgKeyLabel: 'Pokemon TCG API key (free — raises rate limit)',

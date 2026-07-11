@@ -84,6 +84,8 @@ export interface Settings {
   ebayToken?: string
   /** Optional CORS proxy prefix for sources that don't send CORS headers */
   corsProxy?: string
+  /** Display currency for all prices (quotes are FX-converted); default USD */
+  currency?: string
 }
 
 export const SETTINGS_KEY = 'pokesearch.settings'

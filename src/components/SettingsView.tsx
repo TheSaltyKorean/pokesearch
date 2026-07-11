@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { loadSettings, saveSettings, type Settings } from '../lib/types'
+import { SUPPORTED_CURRENCIES } from '../pricing/fx'
 import { t } from '../i18n'
 
 export function SettingsView() {
@@ -25,6 +26,21 @@ export function SettingsView() {
     <div className="panel">
       <h2>{t.settingsTitle}</h2>
       <p className="muted">{t.settingsIntro}</p>
+      <label className="settings-field">
+        {t.currencyLabel}
+        <select
+          value={s.currency ?? 'USD'}
+          onChange={(ev) =>
+            setS({ ...s, currency: ev.target.value === 'USD' ? undefined : ev.target.value })
+          }
+        >
+          {SUPPORTED_CURRENCIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </label>
       {field('pokemonTcgApiKey', t.ptcgKeyLabel)}
       {field('justTcgKey', t.justTcgKeyLabel, 'free key: justtcg.com → dashboard')}
       {field('pokemonPriceTrackerKey', t.pptKeyLabel, 'free key: pokemonpricetracker.com → account → API')}

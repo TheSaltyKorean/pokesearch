@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CollectionEntry } from '../lib/types'
+import { loadSettings, type CollectionEntry } from '../lib/types'
 import {
   deleteEntry,
   exportCollection,
@@ -33,7 +33,7 @@ export function CollectionView() {
       const all = await listCollection()
       if (cancelled) return
       setEntries(all)
-      const stale = staleEntries(all)
+      const stale = staleEntries(all, 24, loadSettings().currency ?? 'USD')
       if (stale.length === 0) return
       setRefreshing(true)
       for (const e of stale) {

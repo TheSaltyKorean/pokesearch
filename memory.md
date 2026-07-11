@@ -9,6 +9,13 @@
   - Identification: prebuilt perceptual-hash index (built from Pokemon TCG API + TCGdex images) matched on-device; ~16 bytes/card so full catalog stays small. Nightly GitHub Action refreshes index.
 - Repo: github.com/TheSaltyKorean/pokesearch (was empty, remote preconfigured).
 - Process: branch protection on main, PR review loop via @codex until all-clear.
+- Built & verified 2026-07-11:
+  - Initial index: 519 cards (EN base1 + sv3pt5, JA SV2a) ≈ 105KB static assets.
+  - Match quality: Charizard base1-4 hires → distance 2 (runner-up 29); JA Pikachu SV2a-025 → distance 4, EN twin surfaces as candidate.
+  - Live on GitHub Pages: https://thesaltykorean.github.io/pokesearch/ (Actions build_type=workflow).
+  - Branch protection on main: PRs required, 0 approvals (so index-bot PRs can automerge), no force pushes.
+  - Visual checks via Playwright MCP on live site: EN Charizard 65% match, Holofoil $510–$1500; JA Pikachu 88% match. Found & fixed bug: TCGdex cardmarket `trend` is an outlier-prone field and variant suffixes are `-holo` (not `-reverse`); summarizeRange now clamps mid into [low, high].
+  - Gotcha: pushes must use TheSaltyKorean@users.noreply.github.com (GitHub email privacy blocks live.com address).
 - Open items:
   - Randy to supply PriceCharting + eBay API keys (Settings page accepts them).
   - Hash index initially covers a subset of sets; nightly action expands coverage.

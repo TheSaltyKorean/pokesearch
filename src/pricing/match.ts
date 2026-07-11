@@ -10,10 +10,19 @@ export function normalizeCardNumber(n: string | undefined): string {
   return n.split('/')[0].trim().replace(/^0+(?=\d)/, '').toLowerCase()
 }
 
-/** Loose containment check between our set name and an API's set name. */
+/**
+ * Loose match between our set name and an API's set name. Exact match after
+ * normalization, or containment where the leftover has no digits — so
+ * "Base" ~ "Base Set" but not "Base" ~ "Base Set 2" (a different set).
+ */
 export function setNamesOverlap(a: string | undefined, b: string | undefined): boolean {
   if (!a || !b) return false
-  const na = a.toLowerCase()
-  const nb = b.toLowerCase()
-  return na.includes(nb) || nb.includes(na)
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9\s]/gi, ' ').replace(/\s+/g, ' ').trim()
+  const na = norm(a)
+  const nb = norm(b)
+  if (!na || !nb) return false
+  if (na === nb) return true
+  const [shorter, longer] = na.length <= nb.length ? [na, nb] : [nb, na]
+  return longer.includes(shorter) && !/\d/.test(longer.replace(shorter, ''))
 }

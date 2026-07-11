@@ -54,14 +54,18 @@ export async function fetchPokemonPriceTrackerPrices(
   for (const [printing, v] of Object.entries(match.variants ?? {})) {
     if (!finite(v.marketPrice) && !finite(v.lowPrice)) continue
     const p = printing.toLowerCase()
+    // "1st" must win over the generic holo check so 1st-edition premiums
+    // don't get averaged into unlimited holofoil.
     quotes.push({
       source: 'PokemonPriceTracker',
-      variant: p.includes('reverse')
-        ? 'reverseHolofoil'
-        : p.includes('holo') || p.includes('foil')
-          ? 'holofoil'
-          : p.includes('1st')
-            ? '1stEditionHolofoil'
+      variant: p.includes('1st')
+        ? p.includes('holo')
+          ? '1stEditionHolofoil'
+          : '1stEditionNormal'
+        : p.includes('reverse')
+          ? 'reverseHolofoil'
+          : p.includes('holo') || p.includes('foil')
+            ? 'holofoil'
             : 'normal',
       currency: 'USD',
       low: finite(v.lowPrice) ? v.lowPrice : undefined,

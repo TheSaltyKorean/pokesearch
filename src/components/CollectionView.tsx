@@ -48,7 +48,7 @@ export function CollectionView() {
             lang: e.lang,
             img: e.img,
             src: e.lang === 'en' ? 'ptcg' : 'tcgdex',
-          })
+          }, { background: true })
           const range = summarizeRange(quotes, e.variant) ?? summarizeRange(quotes)
           await putEntry({ ...e, range: range ?? e.range, lastPricedAt: new Date().toISOString() })
         } catch {

@@ -8,14 +8,24 @@ import { fetchPriceChartingPrices } from './pricecharting'
 import { fetchEbayPrices } from './ebay'
 import { convertQuote, getUsdRates } from './fx'
 
-/** Fetch quotes from every configured source; individual failures are non-fatal. */
-export async function fetchAllPrices(card: CardEntry): Promise<PriceQuote[]> {
+/**
+ * Fetch quotes from every configured source; individual failures are
+ * non-fatal. `background: true` (the collection's automatic stale-refresh)
+ * skips the free-quota sources (JustTCG 100 req/day, PokemonPriceTracker
+ * 100 credits/day) so re-pricing a collection can't silently burn the whole
+ * daily quota — those two only run for foreground lookups.
+ */
+export async function fetchAllPrices(
+  card: CardEntry,
+  opts: { background?: boolean } = {},
+): Promise<PriceQuote[]> {
   const settings = loadSettings()
   const results = await Promise.allSettled([
     fetchPokemonTcgPrices(card, settings),
     fetchTcgdexPrices(card),
-    fetchJustTcgPrices(card, settings),
-    fetchPokemonPriceTrackerPrices(card, settings),
+    ...(opts.background
+      ? []
+      : [fetchJustTcgPrices(card, settings), fetchPokemonPriceTrackerPrices(card, settings)]),
     fetchPriceChartingPrices(card, settings),
     fetchEbayPrices(card, settings),
   ])

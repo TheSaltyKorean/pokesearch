@@ -39,7 +39,7 @@ export const en = {
   pptKeyLabel: 'PokemonPriceTracker API key (free tier — EN + Japanese prices)',
   pcKeyLabel: 'PriceCharting API key (paid — best for Japanese & graded)',
   ebayKeyLabel: 'eBay Browse API OAuth token (listing-based ranges)',
-  corsProxyLabel: 'CORS proxy URL prefix (needed for PriceCharting/eBay in-browser)',
+  corsProxyLabel: 'CORS proxy URL prefix (needed for eBay in-browser)',
   save: 'Save',
   saved: 'Saved.',
   indexStats: (cards: number, langs: string) => `${cards.toLocaleString()} cards indexed (${langs})`,

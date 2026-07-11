@@ -16,6 +16,8 @@
   - Branch protection on main: PRs required, 0 approvals (so index-bot PRs can automerge), no force pushes.
   - Visual checks via Playwright MCP on live site: EN Charizard 65% match, Holofoil $510–$1500; JA Pikachu 88% match. Found & fixed bug: TCGdex cardmarket `trend` is an outlier-prone field and variant suffixes are `-holo` (not `-reverse`); summarizeRange now clamps mid into [low, high].
   - Gotcha: pushes must use TheSaltyKorean@users.noreply.github.com (GitHub email privacy blocks live.com address).
+- Codex loop (PR #1): flagged 2 P2s — `-holo` block mapped blindly to holofoil (now uses `data.variants` to pick reverseHolofoil) and `-Infinity` range bounds when a quote has only `low` (now falls back to mids). Fixed, re-tagged, got all-clear ("Didn't find any major issues"), squash-merged. Post-merge live check: JA Pikachu range €0.02–€19.99 mid €4.55 ✓.
+- Process notes: Codex reacts 👀 when it picks up "@codex review", then reviews in ~5-10 min; poll with `gh api repos/.../pulls/N/reviews` + issue comments. Visual checks: Playwright MCP against the live Pages site; inject test images via in-page fetch→File→DataTransfer (MCP filesystem is isolated from the repo host).
 - Open items:
   - Randy to supply PriceCharting + eBay API keys (Settings page accepts them).
   - Hash index initially covers a subset of sets; nightly action expands coverage.

@@ -10,6 +10,7 @@
  * Usage:
  *   node scripts/build-index.mjs --source ptcg   --sets base1,base2
  *   node scripts/build-index.mjs --source tcgdex --lang ja --sets sv8a,sv7
+ *   node scripts/build-index.mjs --source tcgdex --lang ja --sets all
  *   node scripts/build-index.mjs --source tcgdex --lang ja --list-sets
  *
  * Existing entries are merged (upsert by card id), so the index grows
@@ -137,7 +138,9 @@ async function loadSetCards(setId) {
     }))
   }
   // tcgdex
-  const set = await fetchJson(`https://api.tcgdex.net/v2/${LANG}/sets/${setId}`)
+  const set = await fetchJson(
+    `https://api.tcgdex.net/v2/${LANG}/sets/${encodeURIComponent(setId)}`,
+  )
   return (set.cards ?? [])
     .filter((c) => c.image)
     .map((c) => ({
@@ -161,7 +164,18 @@ async function main() {
     for (const s of sets) console.log(`${s.id}\t${s.cardCount?.total ?? '?'}\t${s.name}`)
     return
   }
-  if (SETS.length === 0) {
+  let sets = SETS
+  if (sets.length === 1 && sets[0] === 'all') {
+    if (SOURCE === 'ptcg') {
+      const data = await fetchJson('https://api.pokemontcg.io/v2/sets?pageSize=250', API_KEY ? { 'X-Api-Key': API_KEY } : {})
+      sets = data.data.map((s) => s.id)
+    } else {
+      const data = await fetchJson(`https://api.tcgdex.net/v2/${LANG}/sets`)
+      sets = data.map((s) => s.id)
+    }
+    console.log(`--sets all → ${sets.length} sets`)
+  }
+  if (sets.length === 0) {
     console.error('No --sets given.')
     process.exit(1)
   }
@@ -181,9 +195,17 @@ async function main() {
     /* fresh index */
   }
 
-  for (const setId of SETS) {
+  let setsLoaded = 0
+  for (const setId of sets) {
     console.log(`\n[${LANG}/${setId}] fetching card list…`)
-    const cards = await loadSetCards(setId)
+    let cards
+    try {
+      cards = await loadSetCards(setId)
+      setsLoaded++
+    } catch (e) {
+      console.warn(`[${LANG}/${setId}] skipped: ${e.message}`)
+      continue
+    }
     console.log(`[${LANG}/${setId}] ${cards.length} cards; hashing images…`)
     let done = 0
     const queue = [...cards]
@@ -208,6 +230,13 @@ async function main() {
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker))
     console.log(`[${LANG}/${setId}] done (${done}/${cards.length})`)
+  }
+
+  // Don't silently publish an empty/unchanged index when every requested set
+  // failed (bad set id, TCGdex outage) — skipping is only OK within --sets all.
+  if (setsLoaded === 0) {
+    console.error('All requested sets failed to load; not writing index.')
+    process.exit(1)
   }
 
   const all = [...existing.values()]

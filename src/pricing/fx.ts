@@ -1,4 +1,4 @@
-import type { PriceQuote } from '../lib/types'
+import type { PriceQuote, PriceRange } from '../lib/types'
 
 /**
  * Currency conversion via frankfurter.dev — free, no key, CORS-enabled,
@@ -69,6 +69,20 @@ export function convertAmount(
   const rTo = rates[to]
   if (!rFrom || !rTo) return undefined
   return (v / rFrom) * rTo
+}
+
+/** Convert a stored range to the target currency; undefined if impossible. */
+export function convertRange(
+  r: PriceRange,
+  to: string,
+  rates: Record<string, number>,
+): PriceRange | undefined {
+  if (r.currency === to) return r
+  const low = convertAmount(r.low, r.currency, to, rates)
+  const mid = convertAmount(r.mid, r.currency, to, rates)
+  const high = convertAmount(r.high, r.currency, to, rates)
+  if (low === undefined || mid === undefined || high === undefined) return undefined
+  return { low, mid, high, currency: to }
 }
 
 /** Convert a quote to the target currency; returned unchanged if impossible. */

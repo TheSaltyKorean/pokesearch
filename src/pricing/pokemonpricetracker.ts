@@ -43,9 +43,14 @@ export async function fetchPokemonPriceTrackerPrices(
   const body = await res.json()
   const cards: PptCard[] = body.data ?? []
 
+  // Name search + number match alone can still hit the wrong card (the same
+  // name+number pair repeats across sets, and with limit=5 the right set may
+  // be absent entirely), so a set-name overlap is required before quoting.
   const wantNumber = normalizeCardNumber(card.number)
-  const numbered = cards.filter((c) => normalizeCardNumber(c.cardNumber) === wantNumber)
-  const match = numbered.find((c) => setNamesOverlap(c.setName, card.set)) ?? numbered[0]
+  const match = cards.find(
+    (c) =>
+      normalizeCardNumber(c.cardNumber) === wantNumber && setNamesOverlap(c.setName, card.set),
+  )
   if (!match) return []
 
   const now = new Date().toISOString()

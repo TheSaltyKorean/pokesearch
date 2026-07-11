@@ -64,20 +64,10 @@ export async function importCollection(json: string): Promise<number> {
   return n
 }
 
-/**
- * Entries whose price is older than maxAgeHours (default: daily refresh) or
- * priced in a different currency than the current display currency.
- */
-export function staleEntries(
-  entries: CollectionEntry[],
-  maxAgeHours = 24,
-  currency = 'USD',
-): CollectionEntry[] {
+/** Entries whose price is older than maxAgeHours (default: daily refresh). */
+export function staleEntries(entries: CollectionEntry[], maxAgeHours = 24): CollectionEntry[] {
   const cutoff = Date.now() - maxAgeHours * 3600_000
   return entries.filter(
-    (e) =>
-      !e.lastPricedAt ||
-      new Date(e.lastPricedAt).getTime() < cutoff ||
-      (e.range && e.range.currency !== currency),
+    (e) => !e.lastPricedAt || new Date(e.lastPricedAt).getTime() < cutoff,
   )
 }

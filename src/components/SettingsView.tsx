@@ -1,0 +1,46 @@
+import { useState } from 'react'
+import { loadSettings, saveSettings, type Settings } from '../lib/types'
+import { t } from '../i18n'
+
+export function SettingsView() {
+  const [s, setS] = useState<Settings>(loadSettings())
+  const [savedMsg, setSavedMsg] = useState(false)
+
+  function field(key: keyof Settings, label: string, placeholder = '') {
+    return (
+      <label className="settings-field">
+        {label}
+        <input
+          type="text"
+          value={s[key] ?? ''}
+          placeholder={placeholder}
+          autoComplete="off"
+          onChange={(ev) => setS({ ...s, [key]: ev.target.value || undefined })}
+        />
+      </label>
+    )
+  }
+
+  return (
+    <div className="panel">
+      <h2>{t.settingsTitle}</h2>
+      <p className="muted">{t.settingsIntro}</p>
+      {field('pokemonTcgApiKey', t.ptcgKeyLabel)}
+      {field('priceChartingKey', t.pcKeyLabel)}
+      {field('ebayToken', t.ebayKeyLabel)}
+      {field('corsProxy', t.corsProxyLabel, 'https://your-proxy.example.com/?url=')}
+      <div className="actions">
+        <button
+          onClick={() => {
+            saveSettings(s)
+            setSavedMsg(true)
+            setTimeout(() => setSavedMsg(false), 1500)
+          }}
+        >
+          {t.save}
+        </button>
+        {savedMsg && <span className="muted">{t.saved}</span>}
+      </div>
+    </div>
+  )
+}

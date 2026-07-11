@@ -1,122 +1,139 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useCallback, useEffect, useState } from 'react'
+import { CameraScanner } from './scanner/CameraScanner'
+import { ResultPanel } from './components/ResultPanel'
+import { CollectionView } from './components/CollectionView'
+import { SettingsView } from './components/SettingsView'
+import {
+  ensureIndexesLoaded,
+  indexedCardCount,
+  loadedLanguages,
+  matchImage,
+  searchByName,
+} from './matching'
+import type { CardEntry, MatchResult } from './lib/types'
+import { t, CARD_LANG_NAMES } from './i18n'
+import './app.css'
 
-function App() {
-  const [count, setCount] = useState(0)
+type Tab = 'scan' | 'search' | 'collection' | 'settings'
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>('scan')
+  const [ready, setReady] = useState(false)
+  const [matches, setMatches] = useState<MatchResult[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<CardEntry[]>([])
+
+  useEffect(() => {
+    ensureIndexesLoaded().then(() => setReady(true))
+  }, [])
+
+  const handleCapture = useCallback((canvas: HTMLCanvasElement) => {
+    setBusy(true)
+    // let the UI paint before the (fast) match
+    requestAnimationFrame(() => {
+      const results = matchImage(canvas, canvas.width, canvas.height)
+      setMatches(results.filter((r) => r.distance <= 40))
+      setBusy(false)
+    })
+  }, [])
+
+  async function handleUpload(file: File) {
+    setBusy(true)
+    const bmp = await createImageBitmap(file)
+    const results = matchImage(bmp, bmp.width, bmp.height)
+    bmp.close()
+    setMatches(results.filter((r) => r.distance <= 40))
+    setBusy(false)
+  }
+
+  function handleSearch(q: string) {
+    setQuery(q)
+    setSearchResults(searchByName(q))
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="app">
+      <header>
+        <h1>{t.appName}</h1>
+        <span className="muted tagline">{t.tagline}</span>
+        <nav>
+          {(['scan', 'search', 'collection', 'settings'] as Tab[]).map((tb) => (
+            <button
+              key={tb}
+              className={tab === tb ? 'active' : ''}
+              onClick={() => {
+                setTab(tb)
+                setMatches(null)
+              }}
+            >
+              {tb === 'scan' ? t.navScan : tb === 'search' ? t.navSearch : tb === 'collection' ? t.navCollection : t.navSettings}
+            </button>
+          ))}
+        </nav>
+      </header>
 
-      <div className="ticks"></div>
+      <main>
+        {matches !== null ? (
+          <ResultPanel matches={matches} onClose={() => setMatches(null)} />
+        ) : tab === 'scan' ? (
+          <div className="panel">
+            {busy && <p>{t.matching}</p>}
+            <CameraScanner onCapture={handleCapture} />
+            <div className="upload">
+              <label className="upload-label">
+                {t.scanUpload}
+                <input
+                  type="file"
+                  accept="image/*"
+                  hidden
+                  onChange={(ev) => ev.target.files?.[0] && handleUpload(ev.target.files[0])}
+                />
+              </label>
+            </div>
+          </div>
+        ) : tab === 'search' ? (
+          <div className="panel">
+            <input
+              className="search-box"
+              type="search"
+              placeholder={t.searchPlaceholder}
+              value={query}
+              onChange={(ev) => handleSearch(ev.target.value)}
+            />
+            <div className="collection-grid">
+              {searchResults.map((c) => (
+                <button
+                  key={`${c.lang}:${c.id}`}
+                  className="entry as-button"
+                  onClick={() => setMatches([{ card: c, distance: 0, confidence: 1 }])}
+                >
+                  <img src={c.img} alt={c.name} loading="lazy" />
+                  <div className="entry-body">
+                    <b>{c.name}</b>
+                    <small>
+                      {c.set} · #{c.number} · {CARD_LANG_NAMES[c.lang] ?? c.lang}
+                    </small>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : tab === 'collection' ? (
+          <CollectionView />
+        ) : (
+          <SettingsView />
+        )}
+      </main>
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <footer className="muted">
+        {ready
+          ? t.indexStats(
+              indexedCardCount(),
+              loadedLanguages().map((l) => CARD_LANG_NAMES[l] ?? l).join(', '),
+            )
+          : 'Loading card index…'}
+      </footer>
+    </div>
   )
 }
-
-export default App

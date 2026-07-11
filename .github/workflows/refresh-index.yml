@@ -1,0 +1,68 @@
+name: Refresh card index (nightly)
+
+on:
+  schedule:
+    - cron: '17 9 * * *' # daily, 09:17 UTC
+  workflow_dispatch:
+    inputs:
+      extra_en_sets:
+        description: 'Extra Pokemon TCG API set ids (comma-separated) to add'
+        required: false
+      extra_tcgdex:
+        description: 'Extra TCGdex sets as lang:setId pairs, comma-separated (e.g. ja:SV8a,ko:SV2a)'
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Re-hash the configured baseline sets (picks up new/errata printings)
+      - name: Baseline English sets
+        run: node scripts/build-index.mjs --source ptcg --sets base1,sv3pt5
+        env:
+          POKEMONTCG_API_KEY: ${{ secrets.POKEMONTCG_API_KEY }}
+      - name: Baseline Japanese sets
+        run: node scripts/build-index.mjs --source tcgdex --lang ja --sets SV2a
+      - name: Extra English sets
+        if: ${{ github.event.inputs.extra_en_sets }}
+        run: node scripts/build-index.mjs --source ptcg --sets "${{ github.event.inputs.extra_en_sets }}"
+        env:
+          POKEMONTCG_API_KEY: ${{ secrets.POKEMONTCG_API_KEY }}
+      - name: Extra TCGdex sets
+        if: ${{ github.event.inputs.extra_tcgdex }}
+        run: |
+          IFS=',' read -ra PAIRS <<< "${{ github.event.inputs.extra_tcgdex }}"
+          for pair in "${PAIRS[@]}"; do
+            lang="${pair%%:*}"; set="${pair#*:}"
+            node scripts/build-index.mjs --source tcgdex --lang "$lang" --sets "$set"
+          done
+      # main is protected, so land the refresh through a PR
+      - name: Open and merge index refresh PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "index-bot"
+          git config user.email "actions@github.com"
+          git add public/carddata
+          if git diff --cached --quiet; then
+            echo "Index unchanged."
+            exit 0
+          fi
+          branch="index-refresh-$(date +%Y%m%d-%H%M)"
+          git checkout -b "$branch"
+          git commit -m "chore: nightly card index refresh"
+          git push origin "$branch"
+          gh pr create --title "chore: nightly card index refresh" \
+            --body "Automated nightly rebuild of the perceptual-hash card index." \
+            --base main --head "$branch"
+          gh pr merge "$branch" --squash --delete-branch

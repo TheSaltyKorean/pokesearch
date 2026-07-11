@@ -1,0 +1,61 @@
+import type { CardEntry, PriceQuote, PriceRange } from '../lib/types'
+import { loadSettings } from '../lib/types'
+import { fetchPokemonTcgPrices } from './pokemontcg'
+import { fetchTcgdexPrices } from './tcgdex'
+import { fetchPriceChartingPrices } from './pricecharting'
+import { fetchEbayPrices } from './ebay'
+
+/** Fetch quotes from every configured source; individual failures are non-fatal. */
+export async function fetchAllPrices(card: CardEntry): Promise<PriceQuote[]> {
+  const settings = loadSettings()
+  const results = await Promise.allSettled([
+    fetchPokemonTcgPrices(card, settings),
+    fetchTcgdexPrices(card),
+    fetchPriceChartingPrices(card, settings),
+    fetchEbayPrices(card, settings),
+  ])
+  const quotes: PriceQuote[] = []
+  for (const r of results) {
+    if (r.status === 'fulfilled') quotes.push(...r.value)
+    else console.warn('price source failed:', r.reason)
+  }
+  return quotes
+}
+
+/** Collapse quotes (optionally for one variant) into a single displayable range. */
+export function summarizeRange(
+  quotes: PriceQuote[],
+  variant?: string,
+): PriceRange | undefined {
+  const usable = quotes.filter(
+    (q) => (!variant || q.variant === variant) && (q.mid ?? q.market ?? q.low) !== undefined,
+  )
+  if (usable.length === 0) return undefined
+  // Prefer USD when mixed currencies are present; otherwise use what we have.
+  const currencies = new Set(usable.map((q) => q.currency))
+  const currency = currencies.has('USD') ? 'USD' : usable[0].currency
+  const filtered = usable.filter((q) => q.currency === currency)
+  const lows = filtered.map((q) => q.low ?? q.mid ?? q.market!).filter(Number.isFinite)
+  const mids = filtered.map((q) => q.mid ?? q.market ?? q.low!).filter(Number.isFinite)
+  const highs = filtered.map((q) => q.high ?? q.mid ?? q.market!).filter(Number.isFinite)
+  if (mids.length === 0) return undefined
+  return {
+    low: Math.min(...lows),
+    mid: mids.reduce((a, b) => a + b, 0) / mids.length,
+    high: Math.max(...highs),
+    currency,
+  }
+}
+
+export function variantsWithPrices(quotes: PriceQuote[]): string[] {
+  return [...new Set(quotes.map((q) => q.variant))]
+}
+
+export function formatMoney(v: number | undefined, currency: string): string {
+  if (v === undefined || !Number.isFinite(v)) return '—'
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency,
+    maximumFractionDigits: 2,
+  }).format(v)
+}

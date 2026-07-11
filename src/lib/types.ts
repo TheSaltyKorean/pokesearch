@@ -1,0 +1,99 @@
+/** A card entry in the prebuilt identification index. */
+export interface CardEntry {
+  /** Source card id, e.g. "base1-4" (PTCG) or "base1-4" (TCGdex ids overlap for EN) */
+  id: string
+  name: string
+  set: string
+  setId: string
+  number: string
+  rarity?: string
+  /** Catalog language: en, ja, ko, zh-tw, zh-cn, de, fr, it, es, pt, ru */
+  lang: string
+  /** Full-size image URL for display */
+  img: string
+  /** Which catalog this came from */
+  src: 'ptcg' | 'tcgdex'
+}
+
+export interface CardIndex {
+  lang: string
+  count: number
+  cards: CardEntry[]
+  /** 16 bytes per card, same order as cards[] */
+  hashes: Uint8Array
+}
+
+export interface MatchResult {
+  card: CardEntry
+  /** Hamming distance 0..128, lower is better */
+  distance: number
+  /** 0..1 confidence derived from distance */
+  confidence: number
+}
+
+export type VariantKey =
+  | 'normal'
+  | 'holofoil'
+  | 'reverseHolofoil'
+  | '1stEditionNormal'
+  | '1stEditionHolofoil'
+  | 'unlimited'
+  | 'graded'
+
+export interface PriceQuote {
+  source: string
+  variant: VariantKey | string
+  currency: string
+  low?: number
+  mid?: number
+  high?: number
+  market?: number
+  url?: string
+  updatedAt: string
+}
+
+export interface PriceRange {
+  low: number
+  mid: number
+  high: number
+  currency: string
+}
+
+export interface CollectionEntry {
+  uid: string
+  cardId: string
+  lang: string
+  name: string
+  set: string
+  number: string
+  img: string
+  variant: string
+  qty: number
+  condition: 'NM' | 'LP' | 'MP' | 'HP' | 'DMG' | 'Graded'
+  paid?: number
+  addedAt: string
+  lastPricedAt?: string
+  range?: PriceRange
+}
+
+export interface Settings {
+  pokemonTcgApiKey?: string
+  priceChartingKey?: string
+  ebayToken?: string
+  /** Optional CORS proxy prefix for sources that don't send CORS headers */
+  corsProxy?: string
+}
+
+export const SETTINGS_KEY = 'pokesearch.settings'
+
+export function loadSettings(): Settings {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
+  } catch {
+    return {}
+  }
+}
+
+export function saveSettings(s: Settings): void {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
+}

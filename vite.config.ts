@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
+// base is '/pokesearch/' for GitHub Pages project site; overridable for other hosts
 export default defineConfig({
+  base: process.env.VITE_BASE ?? '/pokesearch/',
   plugins: [react()],
 })

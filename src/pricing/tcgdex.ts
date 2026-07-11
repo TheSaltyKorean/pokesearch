@@ -18,10 +18,16 @@ export async function fetchTcgdexPrices(card: CardEntry): Promise<PriceQuote[]> 
   if (cm) {
     // Cardmarket blocks expose "" (normal) and "-holo" key suffixes. The
     // `trend` field is frequently an outlier, so the range is built from the
-    // rolling averages instead.
+    // rolling averages instead. The "-holo" block covers whichever foil
+    // variant the card actually has: true holo, or reverse holo when the
+    // card only exists in normal + reverse (per data.variants).
+    const foilVariant =
+      data?.variants?.holo === false && data?.variants?.reverse
+        ? 'reverseHolofoil'
+        : 'holofoil'
     for (const [variant, sfx] of [
       ['normal', ''],
-      ['holofoil', '-holo'],
+      [foilVariant, '-holo'],
     ] as const) {
       const low = cm[`low${sfx}`]
       const avgs = [cm[`avg1${sfx}`], cm[`avg7${sfx}`], cm[`avg30${sfx}`], cm[`avg${sfx}`]]

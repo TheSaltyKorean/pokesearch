@@ -39,8 +39,10 @@ export function summarizeRange(
   const mids = filtered.map((q) => q.mid ?? q.market ?? q.low!).filter(Number.isFinite)
   const highs = filtered.map((q) => q.high ?? q.mid ?? q.market!).filter(Number.isFinite)
   if (mids.length === 0) return undefined
-  let low = Math.min(...lows)
-  let high = Math.max(...highs)
+  // Quotes may carry only a subset of low/mid/high; fall back to mids so the
+  // bounds always stay finite.
+  let low = Math.min(...(lows.length ? lows : mids))
+  let high = Math.max(...(highs.length ? highs : mids))
   if (low > high) [low, high] = [high, low]
   const mid = Math.min(high, Math.max(low, mids.reduce((a, b) => a + b, 0) / mids.length))
   return { low, mid, high, currency }

@@ -60,9 +60,29 @@ export function matchHash(probe: Uint8Array, topK = 8): MatchResult[] {
   return results.slice(0, topK)
 }
 
+/** Hash a sub-rectangle of the source (downscaled for speed). */
+function hashCrop(
+  src: CanvasImageSource,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+): Uint8Array {
+  const scale = Math.min(1, 256 / sw)
+  const c = document.createElement('canvas')
+  c.width = Math.max(1, Math.round(sw * scale))
+  c.height = Math.max(1, Math.round(sh * scale))
+  const ctx = c.getContext('2d')!
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height)
+  return cardHash(c, c.width, c.height)
+}
+
 /**
- * Match an uploaded/captured image. Tries the full frame plus a centered
- * card-aspect (63:88) crop, and returns the best candidate set.
+ * Match an uploaded/captured image. Real captures are never perfectly
+ * framed, so a grid of jittered probes (small offsets and scales around the
+ * best card-aspect rectangle) is hashed and the best distance per card wins.
  */
 export function matchImage(
   src: CanvasImageSource,
@@ -70,25 +90,40 @@ export function matchImage(
   height: number,
   topK = 8,
 ): MatchResult[] {
-  const probes: Uint8Array[] = [cardHash(src, width, height)]
   const cardAspect = 63 / 88
   const frameAspect = width / height
-  if (Math.abs(frameAspect - cardAspect) > 0.06) {
-    let cw: number, ch: number
-    if (frameAspect > cardAspect) {
-      ch = height
-      cw = height * cardAspect
-    } else {
-      cw = width
-      ch = width / cardAspect
-    }
-    const c = document.createElement('canvas')
-    c.width = Math.round(cw)
-    c.height = Math.round(ch)
-    const ctx = c.getContext('2d')!
-    ctx.drawImage(src, (width - cw) / 2, (height - ch) / 2, cw, ch, 0, 0, c.width, c.height)
-    probes.push(cardHash(c, c.width, c.height))
+  // Largest centered card-aspect rectangle
+  let cw: number, ch: number
+  if (frameAspect > cardAspect) {
+    ch = height
+    cw = height * cardAspect
+  } else {
+    cw = width
+    ch = width / cardAspect
   }
+  const cx = (width - cw) / 2
+  const cy = (height - ch) / 2
+
+  const probes: Uint8Array[] = []
+  // Whole frame (covers already-tight crops that aren't card aspect)
+  probes.push(cardHash(src, width, height))
+  // Jitter grid: offsets ±3% and scales 0.94/1.0/1.06 around the base rect
+  const offsets = [-0.03, 0, 0.03]
+  const scales = [0.94, 1, 1.06]
+  for (const s of scales) {
+    const jw = cw * s
+    const jh = ch * s
+    for (const ox of offsets) {
+      for (const oy of offsets) {
+        if (s !== 1 && (ox !== 0 || oy !== 0)) continue // scale probes only centered
+        const sx = cx + (cw - jw) / 2 + ox * cw
+        const sy = cy + (ch - jh) / 2 + oy * ch
+        if (sx < 0 || sy < 0 || sx + jw > width || sy + jh > height) continue
+        probes.push(hashCrop(src, sx, sy, jw, jh))
+      }
+    }
+  }
+
   const best = new Map<string, MatchResult>()
   for (const p of probes) {
     for (const r of matchHash(p, topK)) {

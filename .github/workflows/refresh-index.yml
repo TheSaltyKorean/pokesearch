@@ -31,8 +31,8 @@ jobs:
         run: node scripts/build-index.mjs --source ptcg --sets base1,sv3pt5
         env:
           POKEMONTCG_API_KEY: ${{ secrets.POKEMONTCG_API_KEY }}
-      - name: Baseline Japanese sets
-        run: node scripts/build-index.mjs --source tcgdex --lang ja --sets SV2a
+      - name: Baseline Japanese sets (full catalog; merge skips known cards)
+        run: node scripts/build-index.mjs --source tcgdex --lang ja --sets all
       - name: Extra English sets
         if: ${{ github.event.inputs.extra_en_sets }}
         run: node scripts/build-index.mjs --source ptcg --sets "${{ github.event.inputs.extra_en_sets }}"

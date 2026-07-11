@@ -33,7 +33,8 @@ export default function App() {
     // let the UI paint before the (fast) match
     requestAnimationFrame(() => {
       const results = matchImage(canvas, canvas.width, canvas.height)
-      setMatches(results.filter((r) => r.distance <= 40))
+      // Loose cutoff: show weak candidates too and let the user confirm by eye
+      setMatches(results.filter((r) => r.distance <= 60))
       setBusy(false)
     })
   }, [])
@@ -43,7 +44,7 @@ export default function App() {
     const bmp = await createImageBitmap(file)
     const results = matchImage(bmp, bmp.width, bmp.height)
     bmp.close()
-    setMatches(results.filter((r) => r.distance <= 40))
+    setMatches(results.filter((r) => r.distance <= 60))
     setBusy(false)
   }
 

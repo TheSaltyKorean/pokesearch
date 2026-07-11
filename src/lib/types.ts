@@ -78,10 +78,14 @@ export interface CollectionEntry {
 
 export interface Settings {
   pokemonTcgApiKey?: string
+  justTcgKey?: string
+  pokemonPriceTrackerKey?: string
   priceChartingKey?: string
   ebayToken?: string
   /** Optional CORS proxy prefix for sources that don't send CORS headers */
   corsProxy?: string
+  /** Display currency for all prices (quotes are FX-converted); default USD */
+  currency?: string
 }
 
 export const SETTINGS_KEY = 'pokesearch.settings'

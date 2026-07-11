@@ -27,7 +27,18 @@
 - LIMIT: TCGdex has no JA card data older than ~S9 (2022). If Randy's cards are older JA, need another catalog source (candidate: Limitless TCG scrape). Asked Randy for era.
 - NOTE: many JA cards have no free pricing (TCGdex pricing sparse for JA); PriceCharting key in Settings is the real JA pricing path.
 
+## 2026-07-11 (later still) — more pricing sources + display currency (PR #6)
+- Added JustTCG + PokemonPriceTracker adapters (both free-tier keys, both CORS `*`, both cover JA). Verified live with Randy's JustTCG key: JA SV2a-006 → $2.74–3.64 holofoil; EN base1-4 → $528–728.
+- JustTCG API gotchas (cost a debugging loop): REST search param is `q` (`query` from the SDK docs is silently ignored — returns the whole 24k-card catalog); JA catalog names are ENGLISH so name-search from our Japanese-named index finds nothing — resolve instead via set code + collector number (their set_name embeds JA set codes: "SV2a: Pokemon Card 151"); game slugs are `pokemon` / `pokemon-japan` (adapter resolves via /games at runtime). Free tier: 1k/mo, 100/day, 20 cards/request.
+- PokemonPriceTracker: 100 credits/day, bills 1 credit PER CARD RETURNED → keep limit=5. `language=japanese` param for JA. Not yet live-tested (Randy hasn't signed up).
+- Display currency setting (Randy's ask): all quotes FX-converted via frankfurter.dev (free, CORS, ECB daily, cached 24h in localStorage); default USD; collection entries in a stale currency re-price on open.
+- Codex round 1 caught 4 real P2s: no-number-match fallback quoted wrong cards; '1st Edition Holofoil' mapped to plain holofoil (check '1st' before 'holo'); "Base" substring-matched "Base Set 2" (digit-guard added to setNamesOverlap); background collection refresh could silently burn free-tier quotas (fetchAllPrices now takes {background:true} which skips JustTCG+PPT).
+- PriceCharting: docs claim + curl confirm CORS `*` — removed the proxy requirement from the adapter (memory previously said proxy needed; wrong). Prices are integer pennies; 1 req/sec limit. Randy's PC account is FREE tier — API needs a paid sub, so still no key.
+- Claude-in-Chrome ops notes: two browsers connected (work/Windows, Linux local); Randy's logins land on the Linux one. To read a dashboard-masked API key: hook `navigator.clipboard.writeText` via javascript_tool, click the site's copy button, read `window.__copied`. Don't call `navigator.clipboard.readText()` — its permission prompt freezes the tab for ~45s.
+- Account/key status: JustTCG ✅ (key with Randy to paste into Settings); eBay dev account created, pending eBay review (≥1 business day); pokemontcg.io + PokemonPriceTracker accounts not created yet; PriceCharting needs paid sub for API.
+
 - Open items:
-  - Randy to supply PriceCharting + eBay API keys (Settings page accepts them).
+  - Randy: paste JustTCG key into Settings; decide on PriceCharting Pro sub; finish eBay dev review; optionally create pokemontcg.io + PokemonPriceTracker accounts (I can't create accounts/passwords).
+  - eBay adapter still needs the corsProxy setting; all other sources now proxy-free.
   - Hash index initially covers a subset of sets; nightly action expands coverage.
   - Deployment target: GitHub Pages preferred; p50 container as fallback.

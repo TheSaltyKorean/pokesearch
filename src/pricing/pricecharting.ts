@@ -9,9 +9,9 @@ const LANG_QUALIFIER: Record<string, string> = {
 
 /**
  * PriceCharting — requires the user's API key (paid subscription), entered in
- * Settings. Strongest source for Japanese cards and graded values.
- * PriceCharting's API does not send CORS headers, so browser calls need the
- * optional CORS proxy from Settings.
+ * Settings. Strongest source for Japanese cards and graded values. The API
+ * sends `access-control-allow-origin: *` (verified), so no CORS proxy is
+ * needed. Prices come back as integer pennies. Limit: 1 call/second.
  */
 export async function fetchPriceChartingPrices(
   card: CardEntry,
@@ -23,9 +23,7 @@ export async function fetchPriceChartingPrices(
   const q = encodeURIComponent(
     `pokemon ${qualifier} ${card.set} ${card.name} #${card.number}`.replace(/\s+/g, ' ').trim(),
   )
-  const base = `https://www.pricecharting.com/api/product?t=${key}&q=${q}`
-  const url = settings.corsProxy ? settings.corsProxy + encodeURIComponent(base) : base
-  const res = await fetch(url)
+  const res = await fetch(`https://www.pricecharting.com/api/product?t=${key}&q=${q}`)
   if (!res.ok) throw new Error(`pricecharting ${res.status}`)
   const data = await res.json()
   if (data.status !== 'success') return []

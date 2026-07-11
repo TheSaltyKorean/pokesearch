@@ -10,6 +10,8 @@ Web app: point a camera at (or upload a photo of) a Pokemon card → identify th
 - **Pricing:** `src/pricing/` — pluggable sources behind a common interface:
   - `pokemontcg.ts` — free; TCGplayer (USD) + Cardmarket (EUR) per-variant prices.
   - `tcgdex.ts` — free; multilingual catalog + Cardmarket pricing where present.
+  - `justtcg.ts` — free-tier user key (100 req/day); TCGplayer USD per condition×printing, EN + full JA catalog. Game slugs resolved at runtime via /games.
+  - `pokemonpricetracker.ts` — free-tier user key (100 credits/day, 1/card); TCGplayer USD, EN + JA. Keep `limit` small: every returned card costs a credit.
   - `pricecharting.ts` — requires user API key (Settings); best for Japanese/graded.
   - `ebay.ts` — requires user API key; sold-listing ranges, any language.
   Results merged into a low/mid/high range per variant.

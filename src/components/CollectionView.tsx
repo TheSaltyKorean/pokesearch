@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CollectionEntry } from '../lib/types'
+import { loadSettings, type CollectionEntry } from '../lib/types'
 import {
   deleteEntry,
   exportCollection,
@@ -9,6 +9,7 @@ import {
   staleEntries,
 } from '../db/collection'
 import { fetchAllPrices, formatMoney, summarizeRange } from '../pricing'
+import { convertRange, getUsdRates } from '../pricing/fx'
 import { t, CARD_LANG_NAMES } from '../i18n'
 import { variantLabel } from '../lib/variants'
 
@@ -34,7 +35,9 @@ export function CollectionView() {
       if (cancelled) return
       setEntries(all)
       const stale = staleEntries(all)
-      if (stale.length === 0) return
+      const target = loadSettings().currency ?? 'USD'
+      const needsFx = (e: CollectionEntry) => e.range && e.range.currency !== target
+      if (stale.length === 0 && !all.some(needsFx)) return
       setRefreshing(true)
       for (const e of stale) {
         if (cancelled) break
@@ -48,11 +51,31 @@ export function CollectionView() {
             lang: e.lang,
             img: e.img,
             src: e.lang === 'en' ? 'ptcg' : 'tcgdex',
-          })
+          }, { background: true })
           const range = summarizeRange(quotes, e.variant) ?? summarizeRange(quotes)
           await putEntry({ ...e, range: range ?? e.range, lastPricedAt: new Date().toISOString() })
         } catch {
           /* keep old price on failure */
+        }
+      }
+      // Entries can end up priced in a different currency than the display
+      // setting (setting changed, or a background refresh couldn't reach the
+      // entry's foreground-only sources). FX-convert the stored range
+      // directly — no source quota spent.
+      if (!cancelled) {
+        const current = await listCollection()
+        const mismatched = current.filter(needsFx)
+        if (mismatched.length > 0) {
+          try {
+            const rates = await getUsdRates()
+            for (const e of mismatched) {
+              if (cancelled) break
+              const converted = convertRange(e.range!, target, rates)
+              if (converted) await putEntry({ ...e, range: converted })
+            }
+          } catch {
+            /* offline: keep old currency until rates are reachable */
+          }
         }
       }
       if (!cancelled) {

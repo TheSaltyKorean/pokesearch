@@ -32,6 +32,19 @@ const CACHE_TTL = {
 // eBay application tokens last 7200s; cache per isolate with a safety margin.
 let ebayToken = { value: null, expiresAt: 0 }
 
+// PriceCharting allows 1 call/second per token and can revoke access when
+// exceeded. Space upstream calls out per isolate. (Distinct isolates/colos
+// can't see each other's slots — a true global limit would need a Durable
+// Object — but with the 12h edge cache in front, concurrent uncached
+// lookups for distinct cards are rare.)
+let pcNextSlot = 0
+async function pcThrottle() {
+  const now = Date.now()
+  const wait = Math.max(0, pcNextSlot - now)
+  pcNextSlot = Math.max(now, pcNextSlot) + 1100
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+}
+
 function corsHeaders(request) {
   const origin = request.headers.get('Origin') ?? ''
   const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]
@@ -149,6 +162,7 @@ async function upstreamFor(source, path, searchParams, env) {
       return {
         url: `https://www.pricecharting.com/api/${path}?${upstream}`,
         headers: {},
+        beforeFetch: pcThrottle,
         cacheParams: params, // key excludes the token
       }
     }
@@ -212,6 +226,7 @@ export default {
       return res
     }
 
+    if (upstream.beforeFetch) await upstream.beforeFetch()
     let headers = upstream.headers ?? {}
     if (upstream.authorize) {
       try {

@@ -38,7 +38,9 @@ export async function fetchPriceChartingPrices(
     q: `pokemon ${qualifier} ${card.set} ${card.name} #${card.number}`.replace(/\s+/g, ' ').trim(),
   })
   if (key) params.set('t', key)
-  await rateLimit()
+  // Direct calls hit PriceCharting with the user's own token, so the browser
+  // spaces them; worker calls are throttled (and mostly edge-cached) there.
+  if (key) await rateLimit()
   const res = await fetch(`${base}?${params}`)
   if (!res.ok) throw new Error(`pricecharting ${res.status}`)
   const data = await res.json()

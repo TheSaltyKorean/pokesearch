@@ -3,29 +3,26 @@ import { listCollection, putEntry, deleteEntry } from './collection'
 
 /**
  * Collection sync through the price-proxy Worker (Settings → workerUrl +
- * syncToken). Concurrency model: server-issued revisions plus a local dirty
- * flag — no client clocks anywhere, so a skewed device clock can't poison
- * ordering.
+ * syncToken). Concurrency model: server-issued revisions plus local
+ * mutation sequence numbers — no client clocks anywhere.
  *
- * - Every server blob carries a `rev`. The client remembers the last rev it
- *   reconciled with and whether it has unpushed local changes (dirty).
- * - Pull (app open / settings save): clean + rev changed → adopt the server
- *   copy wholesale (deletes propagate); dirty → push instead.
- * - Push: PUT {baseRev, entries}. A 409 returns the current server blob;
- *   the client merges (local wins per uid, server-only rows kept), adopts
- *   the fresh rev, and retries.
- * - A browser's first-ever reconcile union-merges both sides so neither
- *   collection is clobbered.
- * Residual v1 edge (documented): a row deleted on this device while another
- * device edited concurrently can resurrect through the 409 union-merge.
+ * - The server blob carries a `rev` (issued inside a Durable Object, so
+ *   revision check-and-write is atomic). PUTs name their `baseRev`; a
+ *   mismatch returns 409 with the current blob for merge-and-retry.
+ * - Local dirtiness is a pair of counters (dirtySeq/pushedSeq): an old
+ *   push's success can only acknowledge the mutations it actually carried.
+ * - Per-endpoint sync state ({rev, everSynced, baseUids}) is keyed by the
+ *   worker URL, so pointing Settings at a different Worker is a fresh
+ *   relationship, not a continuation.
+ * - `baseUids` — the uids present at the last successful reconcile — gives
+ *   merges three-way semantics: a row absent from the server that WAS in
+ *   the base was deleted remotely (drop it); one not in the base is a local
+ *   add (keep it). Same logic implicitly honors local deletes.
  */
 
-const SERVER_REV_KEY = 'pokesearch.collection.serverRev'
-const DIRTY_KEY = 'pokesearch.collection.dirty'
-// Set once this browser has reconciled with the server at least once; local
-// edits can predate sync being configured, so dirtiness alone can't tell a
-// first sync from a routine one.
-const EVER_SYNCED_KEY = 'pokesearch.collection.everSynced'
+const DIRTY_SEQ_KEY = 'pokesearch.collection.dirtySeq'
+const PUSHED_SEQ_KEY = 'pokesearch.collection.pushedSeq'
+const STATE_PREFIX = 'pokesearch.collection.syncstate:'
 const PUSH_DEBOUNCE_MS = 3000
 const PUSH_MAX_RETRIES = 3
 // fetch(keepalive) rejects bodies over 64KB (in bytes, not string length);
@@ -37,9 +34,18 @@ interface ServerBlob {
   entries: CollectionEntry[]
 }
 
-function endpoint(
-  settings: Settings,
-): { url: string; headers: Record<string, string> } | undefined {
+interface EndpointState {
+  rev: string | null
+  everSynced: boolean
+  baseUids: string[]
+}
+
+interface Endpoint {
+  url: string
+  headers: Record<string, string>
+}
+
+function endpoint(settings: Settings): Endpoint | undefined {
   if (!settings.workerUrl || !settings.syncToken) return undefined
   return {
     url: `${settings.workerUrl.replace(/\/+$/, '')}/collection`,
@@ -47,34 +53,64 @@ function endpoint(
   }
 }
 
-/** Flag unpushed local changes; cleared only when a push lands (200). */
+function loadState(ep: Endpoint): EndpointState {
+  try {
+    const s = JSON.parse(localStorage.getItem(STATE_PREFIX + ep.url) ?? '')
+    return { rev: s.rev ?? null, everSynced: Boolean(s.everSynced), baseUids: s.baseUids ?? [] }
+  } catch {
+    return { rev: null, everSynced: false, baseUids: [] }
+  }
+}
+
+function saveState(ep: Endpoint, state: EndpointState): void {
+  localStorage.setItem(STATE_PREFIX + ep.url, JSON.stringify(state))
+}
+
+const seq = (key: string) => Number(localStorage.getItem(key) ?? '0')
+
+/** Flag unpushed local changes; acknowledged per-sequence by pushes. */
 export function markCollectionMutated(): void {
-  localStorage.setItem(DIRTY_KEY, '1')
+  localStorage.setItem(DIRTY_SEQ_KEY, String(seq(DIRTY_SEQ_KEY) + 1))
 }
 
-const isDirty = () => Boolean(localStorage.getItem(DIRTY_KEY))
-const serverRev = () => localStorage.getItem(SERVER_REV_KEY)
+const isDirty = () => seq(DIRTY_SEQ_KEY) > seq(PUSHED_SEQ_KEY)
 
-function adoptRev(rev: string | null): void {
-  if (rev === null) localStorage.removeItem(SERVER_REV_KEY)
-  else localStorage.setItem(SERVER_REV_KEY, rev)
-}
-
-// Bumped whenever sync settings change/reconcile restarts; in-flight timers
-// and responses from the previous configuration check it and stand down.
+// Bumped whenever sync settings change/reconcile restarts; in-flight timers,
+// pulls, and responses from the previous configuration stand down.
 let generation = 0
 let pushTimer: ReturnType<typeof setTimeout> | undefined
 let pendingSettings: Settings | undefined
-// Mirrors settledPromise for sync consumers (the page-hide flush) that
-// cannot await.
-let settledState: 'ok' | 'failed' = 'ok'
+// Mirrors settledPromise for the page-hide flush, which cannot await.
+// 'pending' until the first reconcile of the current configuration lands.
+let settledState: 'pending' | 'ok' | 'failed' = 'pending'
+
+/**
+ * Three-way merge against the last reconciled state. Local rows win; rows
+ * the server dropped since base are deleted locally; rows we dropped since
+ * base are not re-added. Returns the resulting local entries.
+ */
+async function mergeServerBlob(ep: Endpoint, server: ServerBlob): Promise<CollectionEntry[]> {
+  const base = new Set(loadState(ep).baseUids)
+  const local = await listCollection()
+  const serverUids = new Set(server.entries.map((e) => e.uid))
+  const localUids = new Set(local.map((e) => e.uid))
+  for (const e of local) {
+    if (!serverUids.has(e.uid) && base.has(e.uid)) await deleteEntry(e.uid) // remote delete
+  }
+  for (const e of server.entries) {
+    if (!localUids.has(e.uid) && !base.has(e.uid)) await putEntry(e) // remote add
+    // present in base but locally absent → we deleted it; don't resurrect
+  }
+  return listCollection()
+}
 
 async function pushNow(settings: Settings, attempt = 0, flush = false): Promise<void> {
   const gen = generation
   const ep = endpoint(settings)
   if (!ep) return
+  const carriedSeq = seq(DIRTY_SEQ_KEY)
   const entries = await listCollection()
-  const body = JSON.stringify({ baseRev: serverRev(), entries })
+  const body = JSON.stringify({ baseRev: loadState(ep).rev, entries })
   let res: Response
   try {
     res = await fetch(ep.url, {
@@ -89,20 +125,18 @@ async function pushNow(settings: Settings, attempt = 0, flush = false): Promise<
   }
   if (gen !== generation) return // settings changed mid-flight; discard
   if (res.status === 409) {
-    // Another device advanced the rev. Merge: local wins per uid (these are
-    // the user's most recent edits), server-only rows are kept.
+    // Another device advanced the rev: three-way merge, adopt, retry.
     const server: ServerBlob = await res.json()
-    const localByUid = new Map(entries.map((e) => [e.uid, e]))
-    for (const e of server.entries) {
-      if (!localByUid.has(e.uid)) await putEntry(e)
-    }
-    adoptRev(server.rev)
+    if (gen !== generation) return
+    await mergeServerBlob(ep, server)
+    const st = loadState(ep)
+    saveState(ep, { ...st, rev: server.rev })
     if (attempt < PUSH_MAX_RETRIES) return pushNow(settings, attempt + 1)
     console.warn('collection push gave up after repeated conflicts')
     return
   }
-  // KV allows ~1 write/second on the same key; a same-second push from
-  // another device surfaces here as 429/5xx and just needs another try.
+  // The DO serializes writes; bursts from another device surface as 429/5xx
+  // and just need another try.
   if (res.status === 429 || res.status >= 500) return retryPush(settings, attempt, res.status, gen)
   if (!res.ok) {
     console.warn('collection push failed:', res.status)
@@ -110,8 +144,12 @@ async function pushNow(settings: Settings, attempt = 0, flush = false): Promise<
   }
   const { rev } = await res.json()
   if (gen !== generation) return
-  adoptRev(rev ?? null)
-  localStorage.removeItem(DIRTY_KEY)
+  saveState(ep, { rev: rev ?? null, everSynced: true, baseUids: entries.map((e) => e.uid) })
+  // Acknowledge only the mutations this push actually carried; a mutation
+  // made while the request was in flight keeps the collection dirty.
+  if (seq(PUSHED_SEQ_KEY) < carriedSeq) {
+    localStorage.setItem(PUSHED_SEQ_KEY, String(carriedSeq))
+  }
 }
 
 function retryPush(settings: Settings, attempt: number, why: unknown, gen: number): void {
@@ -155,9 +193,10 @@ function cancelPendingPush(): void {
 }
 
 // An edit made just before closing the tab must not die in the debounce
-// timer — flush it the moment the page hides (but never before the startup
-// sync succeeded: the flush can't await the pull, and pushing a pre-pull DB
-// would overwrite server state this session never saw).
+// timer — flush it the moment the page hides. Only when the CURRENT
+// configuration's reconcile has succeeded ('ok', not 'pending'/'failed'):
+// the flush can't await the pull, and pushing a pre-pull DB would overwrite
+// server state this session never saw.
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (
@@ -197,54 +236,57 @@ export async function syncOnOpen(
   // Pushes queued under the previous settings must not fire against an old
   // endpoint/token; this reconcile supersedes them.
   cancelPendingPush()
+  const gen = generation
+  settledState = 'pending'
   const run = (async () => {
     const ep = endpoint(settings)
     if (!ep) return 'noop' as const
     const res = await fetch(ep.url, { headers: ep.headers })
+    if (gen !== generation) return 'noop' as const // superseded by a newer reconcile
     if (!res.ok) throw new Error(`sync pull ${res.status}`)
     const server: ServerBlob = await res.json()
+    if (gen !== generation) return 'noop' as const
     const current = await listCollection()
-    const everSynced = Boolean(localStorage.getItem(EVER_SYNCED_KEY))
+    const state = loadState(ep)
 
-    // First reconcile of a browser that already had cards: union-merge both
-    // sides so neither collection is clobbered, then push the union.
-    if (!everSynced && current.length > 0) {
-      const localByUid = new Set(current.map((e) => e.uid))
+    // First reconcile of this browser with THIS endpoint while local cards
+    // exist: no base to merge against, so union both sides and push.
+    if (!state.everSynced && current.length > 0) {
+      const localUids = new Set(current.map((e) => e.uid))
       for (const e of server.entries) {
-        if (!localByUid.has(e.uid)) await putEntry(e)
+        if (!localUids.has(e.uid)) await putEntry(e)
       }
-      adoptRev(server.rev)
+      saveState(ep, { rev: server.rev, everSynced: true, baseUids: [] })
       markCollectionMutated()
-      localStorage.setItem(EVER_SYNCED_KEY, '1')
       await pushNow(settings)
       return 'merged' as const
     }
 
     let outcome: 'pulled' | 'pushed' | 'noop' = 'noop'
     if (isDirty()) {
-      // Local unpushed changes win locally; conflicts merge via the 409
-      // path inside pushNow.
+      // Local unpushed changes: merge/push via pushNow's 409 path.
       schedulePush(settings)
       outcome = 'pushed'
-    } else if ((server.rev ?? null) !== (serverRev() ?? null)) {
+    } else if ((server.rev ?? null) !== (state.rev ?? null)) {
       const keep = new Set(server.entries.map((e) => e.uid))
       for (const e of current) {
         if (!keep.has(e.uid)) await deleteEntry(e.uid)
       }
       for (const e of server.entries) await putEntry(e)
-      adoptRev(server.rev)
+      saveState(ep, { rev: server.rev, everSynced: true, baseUids: [...keep] })
       outcome = 'pulled'
+    } else if (!state.everSynced) {
+      saveState(ep, { ...state, everSynced: true })
     }
-    localStorage.setItem(EVER_SYNCED_KEY, '1')
     return outcome
   })()
   settledPromise = run.then(
     () => {
-      settledState = 'ok'
+      if (gen === generation) settledState = 'ok'
       return 'ok' as const
     },
     () => {
-      settledState = 'failed'
+      if (gen === generation) settledState = 'failed'
       return 'failed' as const
     },
   )

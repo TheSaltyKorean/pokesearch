@@ -2,9 +2,14 @@ name = "pokesearch-prices"
 main = "src/index.js"
 compatibility_date = "2026-07-01"
 
-[[kv_namespaces]]
-binding = "COLLECTION"
-id = "99d3f6644e294d359e94a62cd59ae23b"
+# Collection sync lives in a Durable Object: single-threaded per object, so
+# the revision check-and-write is atomic (KV has no compare-and-swap).
+[durable_objects]
+bindings = [{ name = "COLLECTION_DO", class_name = "CollectionDO" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CollectionDO"]
 
 # Secrets (set with `npx wrangler@3 secret put <NAME>` from this directory):
 #   SYNC_PASSPHRASE      shared token for /collection GET/PUT (collection sync)

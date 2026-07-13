@@ -101,10 +101,13 @@ export function loadSettings(): Settings {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
     // Settings that no longer exist (pre-worker eBay token / CORS proxy)
-    // have no UI to view or clear them; drop them so saveSettings doesn't
-    // carry a stale credential around forever.
-    delete s.ebayToken
-    delete s.corsProxy
+    // have no UI to view or clear them; scrub them from storage too so the
+    // stale credential doesn't sit in localStorage indefinitely.
+    if ('ebayToken' in s || 'corsProxy' in s) {
+      delete s.ebayToken
+      delete s.corsProxy
+      saveSettings(s)
+    }
     return s
   } catch {
     return {}

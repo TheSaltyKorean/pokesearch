@@ -61,8 +61,9 @@ async function pushNow(settings: Settings, attempt = 0, flush = false): Promise<
       method: 'PUT',
       headers: { ...ep.headers, 'Content-Type': 'application/json' },
       body,
-      // Lets a page-hide flush outlive the page; capped by the browser.
-      keepalive: flush && body.length < KEEPALIVE_MAX_BYTES,
+      // Lets a page-hide flush outlive the page. The browser's keepalive
+      // limit is in bytes, and JA card names make bytes > string length.
+      keepalive: flush && new TextEncoder().encode(body).length < KEEPALIVE_MAX_BYTES,
     })
   } catch (err) {
     return retryPush(settings, attempt, err)
@@ -94,10 +95,25 @@ export function schedulePush(settings: Settings): void {
   if (!endpoint(settings)) return
   pendingSettings = settings
   clearTimeout(pushTimer)
-  pushTimer = setTimeout(() => {
+  pushTimer = setTimeout(async () => {
     pushTimer = undefined
+    // A mutation made while the startup pull is still in flight must not
+    // upload the pre-pull DB over newer server state: wait for the pull,
+    // then push the reconciled DB (which now contains the mutation). If the
+    // pull failed we can't know what the server holds — don't push at all.
+    if ((await whenSyncSettled()) === 'failed') {
+      console.warn('collection push skipped: startup sync failed')
+      return
+    }
     void pushNow(settings)
   }, PUSH_DEBOUNCE_MS)
+}
+
+/** Drop any queued upload; the next reconcile decides what syncs where. */
+function cancelPendingPush(): void {
+  clearTimeout(pushTimer)
+  pushTimer = undefined
+  pendingSettings = undefined
 }
 
 // An edit made just before closing the tab must not die in the debounce
@@ -132,6 +148,10 @@ export function whenSyncSettled(): Promise<'ok' | 'failed'> {
 export async function syncOnOpen(
   settings: Settings,
 ): Promise<'pulled' | 'pushed' | 'merged' | 'noop'> {
+  // A push queued under the previous settings must not fire against an old
+  // endpoint/token after the user changes or disables sync; this reconcile
+  // (triggered on save) supersedes it.
+  cancelPendingPush()
   const run = (async () => {
     const ep = endpoint(settings)
     if (!ep) return 'noop' as const

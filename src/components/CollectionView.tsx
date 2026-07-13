@@ -46,7 +46,7 @@ export function CollectionView() {
             id: e.cardId,
             name: e.name,
             set: e.set,
-            setId: '',
+            setId: e.setId ?? '',
             number: e.number,
             lang: e.lang,
             img: e.img,

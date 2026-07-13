@@ -71,42 +71,82 @@ async function getEbayToken(env) {
   return ebayToken.value
 }
 
-/** Build the upstream request for a given route, or null if unsupported. */
+/**
+ * Whitelist + clamp the caller's params. Anything not listed is dropped, so
+ * unknown params can neither reach upstreams nor bust the cache; limits are
+ * clamped because some upstreams bill per returned row (PPT: 1 credit/card).
+ */
+function sanitizeParams(searchParams, allowed, maxLimits) {
+  const params = new URLSearchParams()
+  for (const k of allowed) {
+    const v = searchParams.get(k)
+    if (v) params.set(k, v)
+  }
+  const max = maxLimits ?? 50
+  const limit = Number(params.get('limit'))
+  if (params.has('limit') && (!Number.isFinite(limit) || limit < 1 || limit > max)) {
+    params.set('limit', String(max))
+  }
+  params.sort() // stable order → stable cache key
+  return params
+}
+
+/**
+ * Build the upstream request for a given route, or null if unsupported.
+ * `cacheParams` is the sanitized, secret-free param set the edge cache is
+ * keyed on — never the raw request URL, which callers could vary at will.
+ */
 async function upstreamFor(source, path, searchParams, env) {
   switch (source) {
     case 'ebay': {
       if (path !== 'search') return null
       if (!env.EBAY_CLIENT_ID || !env.EBAY_CLIENT_SECRET) return null
-      const params = new URLSearchParams()
-      for (const k of ['q', 'category_ids', 'limit', 'filter']) {
-        const v = searchParams.get(k)
-        if (v) params.set(k, v)
-      }
+      const params = sanitizeParams(searchParams, ['q', 'category_ids', 'limit', 'filter'], 50)
       if (!params.get('q')) return null
       return {
         url: `https://api.ebay.com/buy/browse/v1/item_summary/search?${params}`,
         headers: { Authorization: `Bearer ${await getEbayToken(env)}` },
+        cacheParams: params,
       }
     }
     case 'justtcg': {
       if (!env.JUSTTCG_KEY || !/^(cards|sets|games)$/.test(path)) return null
+      const params = sanitizeParams(
+        searchParams,
+        ['q', 'game', 'set', 'number', 'limit', 'offset'],
+        20,
+      )
       return {
-        url: `https://api.justtcg.com/v1/${path}?${searchParams}`,
+        url: `https://api.justtcg.com/v1/${path}?${params}`,
         headers: { 'x-api-key': env.JUSTTCG_KEY },
+        cacheParams: params,
       }
     }
     case 'ppt': {
       if (!env.PPT_KEY || !/^(cards|sets)$/.test(path)) return null
+      const params = sanitizeParams(
+        searchParams,
+        ['search', 'set', 'language', 'limit', 'tcgPlayerId'],
+        5,
+      )
+      if (!params.has('limit')) params.set('limit', '5')
+      params.sort()
       return {
-        url: `https://www.pokemonpricetracker.com/api/v2/${path}?${searchParams}`,
+        url: `https://www.pokemonpricetracker.com/api/v2/${path}?${params}`,
         headers: { Authorization: `Bearer ${env.PPT_KEY}` },
+        cacheParams: params,
       }
     }
     case 'pricecharting': {
       if (!env.PRICECHARTING_KEY || !/^(product|products)$/.test(path)) return null
-      const params = new URLSearchParams(searchParams)
-      params.set('t', env.PRICECHARTING_KEY)
-      return { url: `https://www.pricecharting.com/api/${path}?${params}`, headers: {} }
+      const params = sanitizeParams(searchParams, ['q', 'id', 'upc'], 50)
+      const upstream = new URLSearchParams(params)
+      upstream.set('t', env.PRICECHARTING_KEY)
+      return {
+        url: `https://www.pricecharting.com/api/${path}?${upstream}`,
+        headers: {},
+        cacheParams: params, // key excludes the token
+      }
     }
     default:
       return null
@@ -138,15 +178,12 @@ export default {
     const ttl = CACHE_TTL[source]
     if (!ttl) return json({ error: 'unknown source' }, 404, request)
 
-    // Serve from the edge cache first — the cache key ignores the Origin so
-    // every visitor shares one upstream call per distinct query per TTL.
-    const cacheKey = new Request(url.toString(), { method: 'GET' })
-    const cache = caches.default
-    const cached = await cache.match(cacheKey)
-    if (cached) {
-      const res = new Response(cached.body, cached)
-      for (const [k, v] of Object.entries(corsHeaders(request))) res.headers.set(k, v)
-      return res
+    // CORS alone doesn't stop non-browser callers from burning the shared
+    // quotas, so source routes require an allowed Origin outright. (Origin
+    // is spoofable server-side — this is a tripwire, not a boundary.)
+    const origin = request.headers.get('Origin') ?? ''
+    if (!ALLOWED_ORIGINS.includes(origin)) {
+      return json({ error: 'origin not allowed' }, 403, request)
     }
 
     let upstream
@@ -157,13 +194,29 @@ export default {
     }
     if (!upstream) return json({ error: 'unsupported path or key not configured' }, 404, request)
 
+    // The cache key is built from the sanitized params (sorted, whitelisted,
+    // secret-free) so junk params can't bust it, and every visitor shares
+    // one upstream call per distinct real query per TTL.
+    const cacheKey = new Request(`${url.origin}/${source}/${path}?${upstream.cacheParams}`, {
+      method: 'GET',
+    })
+    const cache = caches.default
+    const cached = await cache.match(cacheKey)
+    if (cached) {
+      const res = new Response(cached.body, cached)
+      for (const [k, v] of Object.entries(corsHeaders(request))) res.headers.set(k, v)
+      return res
+    }
+
     const upstreamRes = await fetch(upstream.url, { headers: upstream.headers })
     const body = await upstreamRes.text()
+    // Freshness only on success: a cached 401/429/5xx would keep prices
+    // blank in the browser for the whole TTL after the source recovers.
     const res = new Response(body, {
       status: upstreamRes.status,
       headers: {
         'Content-Type': upstreamRes.headers.get('Content-Type') ?? 'application/json',
-        'Cache-Control': `public, max-age=${ttl}`,
+        'Cache-Control': upstreamRes.ok ? `public, max-age=${ttl}` : 'no-store',
         ...corsHeaders(request),
       },
     })

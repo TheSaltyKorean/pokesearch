@@ -51,6 +51,7 @@ export function ResultPanel({ matches, onClose }: Props) {
       lang: selected.lang,
       name: selected.name,
       set: selected.set,
+      setId: selected.setId,
       number: selected.number,
       img: selected.img,
       variant: variant || 'normal',

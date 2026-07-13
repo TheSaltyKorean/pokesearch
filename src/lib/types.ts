@@ -65,6 +65,8 @@ export interface CollectionEntry {
   lang: string
   name: string
   set: string
+  /** Set code (e.g. "SV2a"); absent on entries saved before it was added. */
+  setId?: string
   number: string
   img: string
   variant: string

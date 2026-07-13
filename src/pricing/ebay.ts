@@ -11,7 +11,9 @@ const LANG_QUALIFIER: Record<string, string> = {
   es: 'spanish',
 }
 
-const GRADED_RE = /\b(PSA|BGS|CGC|SGC|graded|gem\s*mint)\b/i
+// Grader names also appear in compact forms ("PSA10", "BGS9.5") where no
+// word boundary follows the name, so allow an optional attached grade.
+const GRADED_RE = /\b(PSA|BGS|CGC|SGC)(\s*\d|\b)|\bgraded\b|\bgem\s*mint\b/i
 
 function percentiles(prices: number[]): { low: number; mid: number; high: number } {
   const s = [...prices].sort((a, b) => a - b)
@@ -36,7 +38,11 @@ export async function fetchEbayPrices(
   // eBay listings are titled in English (romanized set codes + collector
   // numbers), so searching a non-Latin card name finds almost nothing —
   // "SV2a 006" outperforms "リザードンex" ~30x. Use set code + number there.
-  const terms = /[^\x20-\x7e]/.test(card.name)
+  // Without a set code (old collection entries) a bare number would mix
+  // unrelated sets, so skip rather than risk wrong prices.
+  const nonLatinName = /[^\x20-\x7e]/.test(card.name)
+  if (nonLatinName && !card.setId) return []
+  const terms = nonLatinName
     ? `pokemon ${qualifier} ${card.setId} ${card.number}`
     : `pokemon ${qualifier} ${card.name} ${card.number} ${card.set}`
   const q = encodeURIComponent(terms.replace(/\s+/g, ' ').trim())

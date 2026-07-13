@@ -70,9 +70,10 @@ export function CollectionView() {
           // the other variants' quotes would be wrong. Keep the old range.
           const range = summarizeRange(quotes, e.variant)
           await putEntry({ ...e, range: range ?? e.range, lastPricedAt: new Date().toISOString() })
-          // Mark per successful write: if the tab closes mid-loop, rows
-          // already re-priced must still count as unpushed local changes.
-          markCollectionMutated(e.uid)
+          // Soft mark per successful write: re-priced rows sync when
+          // unopposed, but an automatic refresh must not beat a remote
+          // delete or manual edit in a merge.
+          markCollectionMutated(e.uid, true)
           schedulePush(loadSettings())
         } catch {
           /* keep old price on failure */
@@ -93,7 +94,7 @@ export function CollectionView() {
               const converted = convertRange(e.range!, target, rates)
               if (converted) {
                 await putEntry({ ...e, range: converted })
-                markCollectionMutated(e.uid)
+                markCollectionMutated(e.uid, true) // soft: automatic write
                 schedulePush(loadSettings())
               }
             }

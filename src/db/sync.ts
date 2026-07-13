@@ -20,8 +20,11 @@ import { listCollection, putEntry, deleteEntry } from './collection'
  */
 
 const DIRTY_SEQ_KEY = 'pokesearch.collection.dirtySeq'
-// Array of {uid, seq}; uid '*' means "an unattributed bulk change" (e.g. a
-// JSON import) and makes merges conservatively keep all local rows.
+// Array of {uid, seq, s?}; uid '*' means "an unattributed bulk change" (a
+// JSON import) and makes merges conservatively keep all local rows. s: 1
+// marks a SOFT change (automatic price refresh): it still schedules a push,
+// but yields to the server in merges — a background re-price must not beat
+// a remote delete or a remote manual edit.
 const CHANGE_LOG_KEY = 'pokesearch.collection.changeLog'
 const CHANGE_LOG_CAP = 1000
 const STATE_PREFIX = 'pokesearch.collection.syncstate:'
@@ -76,7 +79,7 @@ function saveState(ep: Endpoint, state: EndpointState): void {
 
 const dirtySeq = () => Number(localStorage.getItem(DIRTY_SEQ_KEY) ?? '0')
 
-function changeLog(): { uid: string; seq: number }[] {
+function changeLog(): { uid: string; seq: number; s?: 1 }[] {
   try {
     return JSON.parse(localStorage.getItem(CHANGE_LOG_KEY) ?? '[]')
   } catch {
@@ -88,19 +91,24 @@ function changeLog(): { uid: string; seq: number }[] {
  * Flag an unpushed local change. Pass the entry's uid so merges can tell
  * "edited here" from "edited remotely"; omit it only for bulk operations
  * (imports), which make merges conservatively keep every local row.
+ * `soft` marks automatic writes (price refresh/FX conversion) that should
+ * sync when unopposed but lose merges to any remote change.
  */
-export function markCollectionMutated(uid?: string): void {
+export function markCollectionMutated(uid?: string, soft = false): void {
   const seq = dirtySeq() + 1
   localStorage.setItem(DIRTY_SEQ_KEY, String(seq))
   const log = changeLog()
-  log.push({ uid: uid ?? '*', seq })
+  log.push(soft && uid ? { uid, seq, s: 1 } : { uid: uid ?? '*', seq })
   localStorage.setItem(CHANGE_LOG_KEY, JSON.stringify(log.slice(-CHANGE_LOG_CAP)))
 }
 
-/** Uids changed locally since `ackedSeq`; null means "assume all changed". */
+/**
+ * Uids HARD-changed locally since `ackedSeq` (user edits, not automatic
+ * refreshes); null means "assume all changed".
+ */
 function changedSince(ackedSeq: number): Set<string> | null {
   const log = changeLog()
-  const relevant = log.filter((c) => c.seq > ackedSeq)
+  const relevant = log.filter((c) => c.seq > ackedSeq && !c.s)
   if (relevant.some((c) => c.uid === '*')) return null
   // The capped log drops oldest entries; if truncation may have swallowed
   // records newer than ackedSeq, be conservative.
@@ -304,14 +312,23 @@ export async function syncOnOpen(
     const state = loadState(ep)
 
     // First reconcile of this browser with THIS endpoint while local cards
-    // exist: no base to merge against, so union both sides and push.
+    // exist: no base to merge against, so union both sides and push. The
+    // server blob becomes the base, and only the rows THIS browser
+    // contributed are marked as local changes — a '*' marker here would let
+    // a conflict between this GET and the PUT treat pulled server rows as
+    // local edits.
     if (!state.everSynced && current.length > 0) {
       const localUids = new Set(current.map((e) => e.uid))
       for (const e of server.entries) {
         if (!localUids.has(e.uid)) await putEntry(e)
       }
-      saveState(ep, { ...state, rev: server.rev, everSynced: true })
-      markCollectionMutated()
+      saveState(ep, {
+        ...state,
+        rev: server.rev,
+        everSynced: true,
+        baseUids: server.entries.map((e) => e.uid),
+      })
+      for (const e of current) markCollectionMutated(e.uid)
       await pushNow(settings)
       return 'merged' as const
     }
@@ -332,13 +349,24 @@ export async function syncOnOpen(
       schedulePush(settings)
       outcome = 'pushed'
     } else if ((server.rev ?? null) !== (state.rev ?? null)) {
-      const keep = new Set(server.entries.map((e) => e.uid))
-      for (const e of current) {
-        if (!keep.has(e.uid)) await deleteEntry(e.uid)
+      if (server.rev === null && current.length > 0) {
+        // The server is pristine again at an endpoint we had synced with
+        // (storage reset/recreated). A real remote "delete everything"
+        // carries a non-null rev, so don't mirror this wipe — re-seed the
+        // server from local instead.
+        saveState(ep, { ...state, rev: null, everSynced: true, baseUids: [] })
+        for (const e of current) markCollectionMutated(e.uid)
+        schedulePush(settings)
+        outcome = 'pushed'
+      } else {
+        const keep = new Set(server.entries.map((e) => e.uid))
+        for (const e of current) {
+          if (!keep.has(e.uid)) await deleteEntry(e.uid)
+        }
+        for (const e of server.entries) await putEntry(e)
+        saveState(ep, { ...state, rev: server.rev, everSynced: true, baseUids: [...keep] })
+        outcome = 'pulled'
       }
-      for (const e of server.entries) await putEntry(e)
-      saveState(ep, { ...state, rev: server.rev, everSynced: true, baseUids: [...keep] })
-      outcome = 'pulled'
     } else if (!state.everSynced) {
       saveState(ep, { ...state, everSynced: true })
     }

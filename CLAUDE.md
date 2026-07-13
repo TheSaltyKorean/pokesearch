@@ -4,7 +4,7 @@
 Web app: point a camera at (or upload a photo of) a Pokemon card → identify the exact card, set, variant, and language → show a price range fast. Optional local collection with daily re-pricing.
 
 ## Architecture
-- **Frontend:** Vite + React + TypeScript, static SPA, deployable to GitHub Pages. No backend.
+- **Frontend:** Vite + React + TypeScript, static SPA on GitHub Pages at https://pokesearch.site (custom domain; DNS on Cloudflare; base '/'). No backend.
 - **Identification:** on-device perceptual hashing (16-byte hash: 64-bit dHash whole card + 64-bit dHash art region) matched by Hamming distance against a prebuilt index shipped as static assets (`public/carddata/`). Captures are matched with a jittered multi-probe grid (offsets ±3% × scales 0.88–1.06) because real camera framing is never exact; weak candidates (distance ≤60) are shown for visual confirmation. The hash algorithm lives in BOTH `src/lib/hash.ts` (browser) and `scripts/build-index.mjs` (sharp) — keep them in sync or rebuild the index.
 - **Hash index build:** `scripts/build-index.mjs` pulls catalogs from Pokemon TCG API (English) and TCGdex (JA/KO/ZH/DE/FR/IT/ES), downloads card images, computes hashes, emits `index-<lang>.json` + `hashes-<lang>.bin` (merge is incremental; known ids skipped). Nightly GitHub Action (`refresh-index.yml`) maintains EN base1+sv3pt5 and the full JA catalog (`--sets all`). KNOWN LIMIT: TCGdex has no JA card data older than ~2022 (S9); older JA cards need a new source.
 - **Pricing:** `src/pricing/` — pluggable sources behind a common interface:

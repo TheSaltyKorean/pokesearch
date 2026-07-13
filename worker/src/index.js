@@ -16,6 +16,8 @@
  */
 
 const ALLOWED_ORIGINS = [
+  'https://pokesearch.site',
+  'https://www.pokesearch.site',
   'https://thesaltykorean.github.io',
   'http://localhost:5173',
   'http://localhost:5199',

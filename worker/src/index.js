@@ -187,12 +187,22 @@ function tokenMatches(request, env) {
   return diff === 0
 }
 
-/** GET/PUT the synced collection blob (auth: Bearer SYNC_PASSPHRASE). */
+/**
+ * GET/PUT the synced collection blob (auth: Bearer SYNC_PASSPHRASE).
+ * Concurrency model: revisions, not clocks. Every stored blob carries a
+ * server-issued `rev`; a PUT must name the `baseRev` it built on and gets a
+ * 409 carrying the current blob when it doesn't match, so the client merges
+ * and retries. Client clocks never participate — a device with a skewed
+ * clock can't poison ordering. KV still has no compare-and-swap, so two
+ * overlapping PUTs with the same baseRev can both land (a Durable Object
+ * would close that window); the loser's device re-pushes on its next sync
+ * because its dirty flag persists until a 200 confirms its own rev.
+ */
 async function handleCollection(request, env) {
   if (!tokenMatches(request, env)) return json({ error: 'unauthorized' }, 401, request)
   if (request.method === 'GET') {
     const blob = await env.COLLECTION.get(COLLECTION_KEY)
-    if (blob === null) return json({ updatedAt: null, entries: [] }, 200, request)
+    if (blob === null) return json({ rev: null, entries: [] }, 200, request)
     return new Response(blob, {
       status: 200,
       headers: {
@@ -204,36 +214,42 @@ async function handleCollection(request, env) {
   }
   // PUT
   const body = await request.text()
-  if (body.length > COLLECTION_MAX_BYTES) return json({ error: 'too large' }, 413, request)
+  // The cap is on encoded bytes; UTF-16 .length undercounts non-ASCII data.
+  if (new TextEncoder().encode(body).length > COLLECTION_MAX_BYTES) {
+    return json({ error: 'too large' }, 413, request)
+  }
   let parsed
   try {
     parsed = JSON.parse(body)
   } catch {
     return json({ error: 'invalid json' }, 400, request)
   }
-  if (typeof parsed?.updatedAt !== 'string' || !Array.isArray(parsed?.entries)) {
-    return json({ error: 'expected {updatedAt, entries[]}' }, 400, request)
+  if (
+    !Array.isArray(parsed?.entries) ||
+    (parsed.baseRev !== null && typeof parsed.baseRev !== 'string')
+  ) {
+    return json({ error: 'expected {baseRev: string|null, entries[]}' }, 400, request)
   }
-  // The client's last-write-wins logic is timestamp-based, so a delayed
-  // request carrying an older snapshot must not overwrite a newer blob.
-  // KV has no compare-and-swap, so this read-then-write can still interleave
-  // with a concurrent PUT and let the older body land last without a 409 (a
-  // Durable Object would close that window). The system self-heals: the
-  // device holding the newer collection keeps its newer local mutatedAt, so
-  // its next syncOnOpen sees an older server blob and re-pushes.
   const existing = await env.COLLECTION.get(COLLECTION_KEY)
+  let currentRev = null
+  let currentEntries = []
   if (existing) {
     try {
       const cur = JSON.parse(existing)
-      if (typeof cur?.updatedAt === 'string' && cur.updatedAt >= parsed.updatedAt) {
-        return json({ error: 'stale write', serverUpdatedAt: cur.updatedAt }, 409, request)
-      }
+      currentRev = cur?.rev ?? null
+      currentEntries = Array.isArray(cur?.entries) ? cur.entries : []
     } catch {
-      /* unreadable existing blob: allow overwrite */
+      /* unreadable existing blob: treat as empty */
     }
   }
-  await env.COLLECTION.put(COLLECTION_KEY, body)
-  return json({ ok: true, updatedAt: parsed.updatedAt }, 200, request)
+  if (parsed.baseRev !== currentRev) {
+    // Conflict: hand back the current blob so the client can merge locally
+    // and retry against the fresh rev.
+    return json({ error: 'conflict', rev: currentRev, entries: currentEntries }, 409, request)
+  }
+  const rev = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
+  await env.COLLECTION.put(COLLECTION_KEY, JSON.stringify({ rev, entries: parsed.entries }))
+  return json({ ok: true, rev }, 200, request)
 }
 
 export default {

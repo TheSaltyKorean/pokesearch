@@ -70,6 +70,10 @@ export function CollectionView() {
           // the other variants' quotes would be wrong. Keep the old range.
           const range = summarizeRange(quotes, e.variant)
           await putEntry({ ...e, range: range ?? e.range, lastPricedAt: new Date().toISOString() })
+          // Mark per successful write: if the tab closes mid-loop, rows
+          // already re-priced must still count as unpushed local changes.
+          markCollectionMutated()
+          schedulePush(loadSettings())
         } catch {
           /* keep old price on failure */
         }
@@ -87,7 +91,11 @@ export function CollectionView() {
             for (const e of mismatched) {
               if (cancelled) break
               const converted = convertRange(e.range!, target, rates)
-              if (converted) await putEntry({ ...e, range: converted })
+              if (converted) {
+                await putEntry({ ...e, range: converted })
+                markCollectionMutated()
+                schedulePush(loadSettings())
+              }
             }
           } catch {
             /* offline: keep old currency until rates are reachable */
@@ -97,9 +105,6 @@ export function CollectionView() {
       if (!cancelled) {
         setRefreshing(false)
         reload()
-        // Re-priced/converted values should reach the other devices too.
-        markCollectionMutated()
-        schedulePush(loadSettings())
       }
     })()
     return () => {

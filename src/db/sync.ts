@@ -336,8 +336,18 @@ export async function syncOnOpen(
       return 'merged' as const
     }
 
+    let st = state
+    if (!st.everSynced && current.length === 0) {
+      // First sync with nothing local: stale pre-sync change-log history
+      // (e.g. an import whose rows were all deleted again) must not
+      // masquerade as dirtiness and push an empty collection — acknowledge
+      // it and take the clean pull below.
+      st = { ...st, everSynced: true, ackedSeq: dirtySeq() }
+      saveState(ep, st)
+    }
+
     let outcome: 'pulled' | 'pushed' | 'noop' = 'noop'
-    if (server.rev === null && state.rev !== null && current.length > 0) {
+    if (server.rev === null && st.rev !== null && current.length > 0) {
       // The server is pristine again at an endpoint we had synced with
       // (storage reset/recreated). A real remote "delete everything"
       // carries a non-null rev, so don't mirror this wipe — re-seed the
@@ -352,13 +362,13 @@ export async function syncOnOpen(
       for (const e of current) markCollectionMutated(e.uid)
       schedulePush(settings)
       outcome = 'pushed'
-    } else if (dirtySeq() > state.ackedSeq) {
+    } else if (dirtySeq() > st.ackedSeq) {
       // This endpoint hasn't acknowledged the latest local edits. If the
       // server also moved, merge the pulled blob BEFORE resolving so
       // consumers gated on whenSyncSettled() (the stale-price refresh) see
       // remote deletes/edits applied. Same-rev servers have nothing to
       // merge — merging would revert unpushed soft (auto-refresh) writes.
-      if ((server.rev ?? null) !== (state.rev ?? null)) {
+      if ((server.rev ?? null) !== (st.rev ?? null)) {
         await mergeServerBlob(ep, server)
         saveState(ep, {
           ...loadState(ep),
@@ -369,16 +379,14 @@ export async function syncOnOpen(
       }
       schedulePush(settings)
       outcome = 'pushed'
-    } else if ((server.rev ?? null) !== (state.rev ?? null)) {
+    } else if ((server.rev ?? null) !== (st.rev ?? null)) {
       const keep = new Set(server.entries.map((e) => e.uid))
       for (const e of current) {
         if (!keep.has(e.uid)) await deleteEntry(e.uid)
       }
       for (const e of server.entries) await putEntry(e)
-      saveState(ep, { ...state, rev: server.rev, everSynced: true, baseUids: [...keep] })
+      saveState(ep, { ...st, rev: server.rev, everSynced: true, baseUids: [...keep] })
       outcome = 'pulled'
-    } else if (!state.everSynced) {
-      saveState(ep, { ...state, everSynced: true })
     }
     return outcome
   })()

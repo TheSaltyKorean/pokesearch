@@ -72,7 +72,7 @@ export function CollectionView() {
           await putEntry({ ...e, range: range ?? e.range, lastPricedAt: new Date().toISOString() })
           // Mark per successful write: if the tab closes mid-loop, rows
           // already re-priced must still count as unpushed local changes.
-          markCollectionMutated()
+          markCollectionMutated(e.uid)
           schedulePush(loadSettings())
         } catch {
           /* keep old price on failure */
@@ -93,7 +93,7 @@ export function CollectionView() {
               const converted = convertRange(e.range!, target, rates)
               if (converted) {
                 await putEntry({ ...e, range: converted })
-                markCollectionMutated()
+                markCollectionMutated(e.uid)
                 schedulePush(loadSettings())
               }
             }
@@ -114,14 +114,16 @@ export function CollectionView() {
 
   const total = entries.reduce((sum, e) => sum + (e.range?.mid ?? 0) * e.qty, 0)
 
-  function noteMutation() {
-    markCollectionMutated()
+  // uid undefined = bulk/unattributed change (import) — merges then keep
+  // every local row rather than guessing.
+  function noteMutation(uid?: string) {
+    markCollectionMutated(uid)
     schedulePush(loadSettings())
   }
 
   async function update(e: CollectionEntry, patch: Partial<CollectionEntry>) {
     await putEntry({ ...e, ...patch })
-    noteMutation()
+    noteMutation(e.uid)
     reload()
   }
 
@@ -198,7 +200,7 @@ export function CollectionView() {
                 </label>
                 <button
                   className="danger"
-                  onClick={() => deleteEntry(e.uid).then(() => { noteMutation(); reload() })}
+                  onClick={() => deleteEntry(e.uid).then(() => { noteMutation(e.uid); reload() })}
                 >
                   {t.remove}
                 </button>

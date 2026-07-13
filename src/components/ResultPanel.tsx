@@ -47,8 +47,9 @@ export function ResultPanel({ matches, onClose }: Props) {
 
   async function addToCollection() {
     if (!selected) return
+    const uid = newUid()
     await putEntry({
-      uid: newUid(),
+      uid,
       cardId: selected.id,
       lang: selected.lang,
       name: selected.name,
@@ -63,7 +64,7 @@ export function ResultPanel({ matches, onClose }: Props) {
       lastPricedAt: quotes ? new Date().toISOString() : undefined,
       range,
     })
-    markCollectionMutated()
+    markCollectionMutated(uid)
     schedulePush(loadSettings())
     setAdded(true)
   }

@@ -6,22 +6,24 @@ import { listCollection, putEntry, deleteEntry } from './collection'
  * syncToken). Concurrency model: server-issued revisions plus local
  * mutation sequence numbers — no client clocks anywhere.
  *
- * - The server blob carries a `rev` (issued inside a Durable Object, so
+ * - The server blob carries a `rev` (issued inside a Durable Object, so the
  *   revision check-and-write is atomic). PUTs name their `baseRev`; a
  *   mismatch returns 409 with the current blob for merge-and-retry.
- * - Local dirtiness is a pair of counters (dirtySeq/pushedSeq): an old
- *   push's success can only acknowledge the mutations it actually carried.
- * - Per-endpoint sync state ({rev, everSynced, baseUids}) is keyed by the
- *   worker URL, so pointing Settings at a different Worker is a fresh
- *   relationship, not a continuation.
- * - `baseUids` — the uids present at the last successful reconcile — gives
- *   merges three-way semantics: a row absent from the server that WAS in
- *   the base was deleted remotely (drop it); one not in the base is a local
- *   add (keep it). Same logic implicitly honors local deletes.
+ * - Mutations increment a global `dirtySeq` and append the touched uid to a
+ *   change log. Each endpoint remembers the sequence it has acknowledged
+ *   (`ackedSeq`), so dirtiness and per-row "changed since last push" are
+ *   both per-endpoint — switching Workers is a fresh relationship.
+ * - Merges are three-way: `baseUids` (uids at last reconcile) decides
+ *   adds vs deletes; the change log decides row content — a row is kept
+ *   local only if it was actually edited here since the endpoint's last
+ *   ack, otherwise the server's version (a remote edit) is adopted.
  */
 
 const DIRTY_SEQ_KEY = 'pokesearch.collection.dirtySeq'
-const PUSHED_SEQ_KEY = 'pokesearch.collection.pushedSeq'
+// Array of {uid, seq}; uid '*' means "an unattributed bulk change" (e.g. a
+// JSON import) and makes merges conservatively keep all local rows.
+const CHANGE_LOG_KEY = 'pokesearch.collection.changeLog'
+const CHANGE_LOG_CAP = 1000
 const STATE_PREFIX = 'pokesearch.collection.syncstate:'
 const PUSH_DEBOUNCE_MS = 3000
 const PUSH_MAX_RETRIES = 3
@@ -38,6 +40,7 @@ interface EndpointState {
   rev: string | null
   everSynced: boolean
   baseUids: string[]
+  ackedSeq: number
 }
 
 interface Endpoint {
@@ -56,9 +59,14 @@ function endpoint(settings: Settings): Endpoint | undefined {
 function loadState(ep: Endpoint): EndpointState {
   try {
     const s = JSON.parse(localStorage.getItem(STATE_PREFIX + ep.url) ?? '')
-    return { rev: s.rev ?? null, everSynced: Boolean(s.everSynced), baseUids: s.baseUids ?? [] }
+    return {
+      rev: s.rev ?? null,
+      everSynced: Boolean(s.everSynced),
+      baseUids: s.baseUids ?? [],
+      ackedSeq: Number(s.ackedSeq ?? 0),
+    }
   } catch {
-    return { rev: null, everSynced: false, baseUids: [] }
+    return { rev: null, everSynced: false, baseUids: [], ackedSeq: 0 }
   }
 }
 
@@ -66,14 +74,39 @@ function saveState(ep: Endpoint, state: EndpointState): void {
   localStorage.setItem(STATE_PREFIX + ep.url, JSON.stringify(state))
 }
 
-const seq = (key: string) => Number(localStorage.getItem(key) ?? '0')
+const dirtySeq = () => Number(localStorage.getItem(DIRTY_SEQ_KEY) ?? '0')
 
-/** Flag unpushed local changes; acknowledged per-sequence by pushes. */
-export function markCollectionMutated(): void {
-  localStorage.setItem(DIRTY_SEQ_KEY, String(seq(DIRTY_SEQ_KEY) + 1))
+function changeLog(): { uid: string; seq: number }[] {
+  try {
+    return JSON.parse(localStorage.getItem(CHANGE_LOG_KEY) ?? '[]')
+  } catch {
+    return []
+  }
 }
 
-const isDirty = () => seq(DIRTY_SEQ_KEY) > seq(PUSHED_SEQ_KEY)
+/**
+ * Flag an unpushed local change. Pass the entry's uid so merges can tell
+ * "edited here" from "edited remotely"; omit it only for bulk operations
+ * (imports), which make merges conservatively keep every local row.
+ */
+export function markCollectionMutated(uid?: string): void {
+  const seq = dirtySeq() + 1
+  localStorage.setItem(DIRTY_SEQ_KEY, String(seq))
+  const log = changeLog()
+  log.push({ uid: uid ?? '*', seq })
+  localStorage.setItem(CHANGE_LOG_KEY, JSON.stringify(log.slice(-CHANGE_LOG_CAP)))
+}
+
+/** Uids changed locally since `ackedSeq`; null means "assume all changed". */
+function changedSince(ackedSeq: number): Set<string> | null {
+  const log = changeLog()
+  const relevant = log.filter((c) => c.seq > ackedSeq)
+  if (relevant.some((c) => c.uid === '*')) return null
+  // The capped log drops oldest entries; if truncation may have swallowed
+  // records newer than ackedSeq, be conservative.
+  if (log.length === CHANGE_LOG_CAP && (log[0]?.seq ?? 0) > ackedSeq + 1) return null
+  return new Set(relevant.map((c) => c.uid))
+}
 
 // Bumped whenever sync settings change/reconcile restarts; in-flight timers,
 // pulls, and responses from the previous configuration stand down.
@@ -81,34 +114,45 @@ let generation = 0
 let pushTimer: ReturnType<typeof setTimeout> | undefined
 let pendingSettings: Settings | undefined
 // Mirrors settledPromise for the page-hide flush, which cannot await.
-// 'pending' until the first reconcile of the current configuration lands.
+// 'pending' until the current configuration's reconcile lands.
 let settledState: 'pending' | 'ok' | 'failed' = 'pending'
 
 /**
- * Three-way merge against the last reconciled state. Local rows win; rows
- * the server dropped since base are deleted locally; rows we dropped since
- * base are not re-added. Returns the resulting local entries.
+ * Three-way merge against the last reconciled state. Row content: locally
+ * edited rows win, otherwise the server version is adopted (remote edits
+ * propagate). Membership: rows the server dropped since base are deleted
+ * locally (unless edited here); rows we dropped since base are not
+ * re-added; local and remote adds survive.
  */
-async function mergeServerBlob(ep: Endpoint, server: ServerBlob): Promise<CollectionEntry[]> {
-  const base = new Set(loadState(ep).baseUids)
+async function mergeServerBlob(ep: Endpoint, server: ServerBlob): Promise<void> {
+  const state = loadState(ep)
+  const base = new Set(state.baseUids)
+  const changed = changedSince(state.ackedSeq) // null → keep all local rows
   const local = await listCollection()
-  const serverUids = new Set(server.entries.map((e) => e.uid))
   const localUids = new Set(local.map((e) => e.uid))
+  const serverByUid = new Map(server.entries.map((e) => [e.uid, e]))
   for (const e of local) {
-    if (!serverUids.has(e.uid) && base.has(e.uid)) await deleteEntry(e.uid) // remote delete
+    const locallyEdited = changed === null || changed.has(e.uid)
+    if (!serverByUid.has(e.uid)) {
+      // Absent on server: a remote delete if we knew it at base and didn't
+      // touch it; otherwise a local add/edit — keep it.
+      if (base.has(e.uid) && !locallyEdited) await deleteEntry(e.uid)
+    } else if (!locallyEdited) {
+      await putEntry(serverByUid.get(e.uid)!) // adopt remote edit
+    }
+    // locally edited + present on server → local wins for this row
   }
   for (const e of server.entries) {
     if (!localUids.has(e.uid) && !base.has(e.uid)) await putEntry(e) // remote add
-    // present in base but locally absent → we deleted it; don't resurrect
+    // in base but locally absent → we deleted it; don't resurrect
   }
-  return listCollection()
 }
 
 async function pushNow(settings: Settings, attempt = 0, flush = false): Promise<void> {
   const gen = generation
   const ep = endpoint(settings)
   if (!ep) return
-  const carriedSeq = seq(DIRTY_SEQ_KEY)
+  const carriedSeq = dirtySeq()
   const entries = await listCollection()
   const body = JSON.stringify({ baseRev: loadState(ep).rev, entries })
   let res: Response
@@ -144,12 +188,15 @@ async function pushNow(settings: Settings, attempt = 0, flush = false): Promise<
   }
   const { rev } = await res.json()
   if (gen !== generation) return
-  saveState(ep, { rev: rev ?? null, everSynced: true, baseUids: entries.map((e) => e.uid) })
-  // Acknowledge only the mutations this push actually carried; a mutation
-  // made while the request was in flight keeps the collection dirty.
-  if (seq(PUSHED_SEQ_KEY) < carriedSeq) {
-    localStorage.setItem(PUSHED_SEQ_KEY, String(carriedSeq))
-  }
+  const st = loadState(ep)
+  saveState(ep, {
+    rev: rev ?? null,
+    everSynced: true,
+    baseUids: entries.map((e) => e.uid),
+    // Acknowledge only the mutations this push actually carried; an edit
+    // made while the request was in flight keeps the endpoint dirty.
+    ackedSeq: Math.max(st.ackedSeq, carriedSeq),
+  })
 }
 
 function retryPush(settings: Settings, attempt: number, why: unknown, gen: number): void {
@@ -174,10 +221,16 @@ export function schedulePush(settings: Settings): void {
   pushTimer = setTimeout(async () => {
     pushTimer = undefined
     // A mutation made while the startup pull is in flight stays dirty; wait
-    // for the pull so the push carries the reconciled DB. If the pull
-    // failed we can't know what the server holds — keep it local for now.
-    if ((await whenSyncSettled()) === 'failed' || gen !== generation) {
-      if (gen === generation) console.warn('collection push skipped: startup sync failed')
+    // for the pull so the push carries the reconciled DB.
+    const settled = await whenSyncSettled()
+    if (gen !== generation) return
+    if (settled === 'failed') {
+      // The startup pull failed (offline/5xx). This edit is a natural
+      // moment to retry the reconcile — on success it schedules the push
+      // itself; on another failure the NEXT edit retries again.
+      void syncOnOpen(settings).catch(() => {
+        console.warn('collection push deferred: sync still unreachable')
+      })
       return
     }
     void pushNow(settings)
@@ -199,17 +252,14 @@ function cancelPendingPush(): void {
 // server state this session never saw.
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
-    if (
-      document.visibilityState === 'hidden' &&
-      pushTimer !== undefined &&
-      pendingSettings &&
-      settledState === 'ok' &&
-      isDirty()
-    ) {
-      clearTimeout(pushTimer)
-      pushTimer = undefined
-      void pushNow(pendingSettings, 0, true)
+    if (document.visibilityState !== 'hidden' || pushTimer === undefined || !pendingSettings) {
+      return
     }
+    const ep = endpoint(pendingSettings)
+    if (!ep || settledState !== 'ok' || dirtySeq() <= loadState(ep).ackedSeq) return
+    clearTimeout(pushTimer)
+    pushTimer = undefined
+    void pushNow(pendingSettings, 0, true)
   })
 }
 
@@ -242,7 +292,7 @@ export async function syncOnOpen(
     const ep = endpoint(settings)
     if (!ep) return 'noop' as const
     const res = await fetch(ep.url, { headers: ep.headers })
-    if (gen !== generation) return 'noop' as const // superseded by a newer reconcile
+    if (gen !== generation) return 'noop' as const // superseded reconcile
     if (!res.ok) throw new Error(`sync pull ${res.status}`)
     const server: ServerBlob = await res.json()
     if (gen !== generation) return 'noop' as const
@@ -256,15 +306,16 @@ export async function syncOnOpen(
       for (const e of server.entries) {
         if (!localUids.has(e.uid)) await putEntry(e)
       }
-      saveState(ep, { rev: server.rev, everSynced: true, baseUids: [] })
+      saveState(ep, { ...state, rev: server.rev, everSynced: true })
       markCollectionMutated()
       await pushNow(settings)
       return 'merged' as const
     }
 
     let outcome: 'pulled' | 'pushed' | 'noop' = 'noop'
-    if (isDirty()) {
-      // Local unpushed changes: merge/push via pushNow's 409 path.
+    if (dirtySeq() > state.ackedSeq) {
+      // This endpoint hasn't acknowledged the latest local edits: merge and
+      // push via pushNow's 409 path.
       schedulePush(settings)
       outcome = 'pushed'
     } else if ((server.rev ?? null) !== (state.rev ?? null)) {
@@ -273,7 +324,7 @@ export async function syncOnOpen(
         if (!keep.has(e.uid)) await deleteEntry(e.uid)
       }
       for (const e of server.entries) await putEntry(e)
-      saveState(ep, { rev: server.rev, everSynced: true, baseUids: [...keep] })
+      saveState(ep, { ...state, rev: server.rev, everSynced: true, baseUids: [...keep] })
       outcome = 'pulled'
     } else if (!state.everSynced) {
       saveState(ep, { ...state, everSynced: true })

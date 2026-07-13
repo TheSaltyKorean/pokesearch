@@ -97,7 +97,13 @@ export const SETTINGS_KEY = 'pokesearch.settings'
 
 export function loadSettings(): Settings {
   try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
+    // Settings that no longer exist (pre-worker eBay token / CORS proxy)
+    // have no UI to view or clear them; drop them so saveSettings doesn't
+    // carry a stale credential around forever.
+    delete s.ebayToken
+    delete s.corsProxy
+    return s
   } catch {
     return {}
   }

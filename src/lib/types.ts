@@ -81,9 +81,12 @@ export interface Settings {
   justTcgKey?: string
   pokemonPriceTrackerKey?: string
   priceChartingKey?: string
-  ebayToken?: string
-  /** Optional CORS proxy prefix for sources that don't send CORS headers */
-  corsProxy?: string
+  /**
+   * Price-proxy (Cloudflare Worker) base URL. Holds shared API keys
+   * server-side and fronts sources that lack CORS (eBay). Used by a source
+   * whenever its per-user key above is empty.
+   */
+  workerUrl?: string
   /** Display currency for all prices (quotes are FX-converted); default USD */
   currency?: string
 }

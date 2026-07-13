@@ -37,8 +37,16 @@
 - Claude-in-Chrome ops notes: two browsers connected (work/Windows, Linux local); Randy's logins land on the Linux one. To read a dashboard-masked API key: hook `navigator.clipboard.writeText` via javascript_tool, click the site's copy button, read `window.__copied`. Don't call `navigator.clipboard.readText()` — its permission prompt freezes the tab for ~45s.
 - Account/key status: JustTCG ✅ (key with Randy to paste into Settings); eBay dev account created, pending eBay review (≥1 business day); pokemontcg.io + PokemonPriceTracker accounts not created yet; PriceCharting needs paid sub for API.
 
+## 2026-07-12 — eBay live + price-proxy Worker (PR #7)
+- eBay dev account approved. Created production keyset "pokesearch" via Claude-in-Chrome (Randy filled the primary-contact form himself — personal data). Keyset ships DISABLED until Marketplace Account Deletion compliance: applied the exemption ("I do not persist eBay data" — truthful, nothing is stored server-side) via the toggle → Confirm → questionnaire → Submit flow on developer.ebay.com/my/push. Enabled: 5,000 calls/day.
+- eBay creds: App ID RandyWal-pokesear-PRD-e5387b949-16e43353 (Cert ID is in the dev portal / worker secrets — do not commit). Tokens: client_credentials, scope api_scope, expire 7200s. Browse API + token endpoint send NO CORS headers → browser can't call eBay directly, hence the Worker.
+- `worker/` — Cloudflare Worker `pokesearch-prices`: holds all source keys as secrets, read-only GET routes (/ebay/search, /justtcg/*, /ppt/*, /pricecharting/*), per-URL edge cache (6–12h) to stretch free quotas, CORS locked to the Pages origin + localhost. This is Randy's requested "persist keys for the whole app" answer (he vetoed GCP). Wrangler must be v3 (`npx wrangler@3`) — machine is Node 20, wrangler 4 needs 22.
+- eBay adapter rewritten: worker-only (ebayToken + corsProxy settings removed), splits raw vs graded listings by title regex (PSA|BGS|CGC|SGC|graded|gem mint) into separate variants, and for non-Latin card names queries `pokemon <lang> <setId> <number>` — "SV2a 006" gets ~30x more listings than "リザードンex". Verified via local wrangler dev: JA SV2a-006 → raw $2.99–45 mid $4.99 (37 listings), graded mid $49 (13) — consistent with JustTCG NM $3.37 and observed PSA-10 asks.
+- justtcg/ppt/pricecharting adapters: use per-user key if set, else workerUrl route. Settings gains workerUrl.
+- DEPLOY STILL PENDING: needs Randy's Cloudflare account + `npx wrangler@3 login`, then `cd worker && npx wrangler@3 deploy` + `secret put` EBAY_CLIENT_ID / EBAY_CLIENT_SECRET / JUSTTCG_KEY, then paste the workers.dev URL into Settings→workerUrl.
+
 - Open items:
-  - Randy: paste JustTCG key into Settings; decide on PriceCharting Pro sub; finish eBay dev review; optionally create pokemontcg.io + PokemonPriceTracker accounts (I can't create accounts/passwords).
-  - eBay adapter still needs the corsProxy setting; all other sources now proxy-free.
+  - Deploy the worker (blocked on Cloudflare login); paste workerUrl into live Settings.
+  - Randy: JustTCG key into Settings (or rely on worker); PriceCharting Pro sub decision; PokemonPriceTracker + pokemontcg.io accounts still uncreated.
   - Hash index initially covers a subset of sets; nightly action expands coverage.
   - Deployment target: GitHub Pages preferred; p50 container as fallback.

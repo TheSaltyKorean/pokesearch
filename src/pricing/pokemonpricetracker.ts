@@ -31,7 +31,8 @@ export async function fetchPokemonPriceTrackerPrices(
   settings: Settings,
 ): Promise<PriceQuote[]> {
   const key = settings.pokemonPriceTrackerKey
-  if (!key) return []
+  const base = key ? API : settings.workerUrl && settings.workerUrl.replace(/\/+$/, '') + '/ppt'
+  if (!base) return []
   if (card.lang !== 'en' && card.lang !== 'ja') return []
 
   // Filter by set in the request itself (their `set` param matches loosely,
@@ -39,8 +40,8 @@ export async function fetchPokemonPriceTrackerPrices(
   // one page, and every returned card bills a credit.
   const params = new URLSearchParams({ search: card.name, set: card.set, limit: '5' })
   if (card.lang === 'ja') params.set('language', 'japanese')
-  const res = await fetch(`${API}/cards?${params}`, {
-    headers: { Authorization: `Bearer ${key}` },
+  const res = await fetch(`${base}/cards?${params}`, {
+    headers: key ? { Authorization: `Bearer ${key}` } : {},
   })
   if (!res.ok) throw new Error(`pokemonpricetracker ${res.status}`)
   const body = await res.json()

@@ -18,12 +18,16 @@ export async function fetchPriceChartingPrices(
   settings: Settings,
 ): Promise<PriceQuote[]> {
   const key = settings.priceChartingKey
-  if (!key) return []
+  const base = key
+    ? 'https://www.pricecharting.com/api/product'
+    : settings.workerUrl && `${settings.workerUrl.replace(/\/+$/, '')}/pricecharting/product`
+  if (!base) return []
   const qualifier = LANG_QUALIFIER[card.lang] ?? ''
-  const q = encodeURIComponent(
-    `pokemon ${qualifier} ${card.set} ${card.name} #${card.number}`.replace(/\s+/g, ' ').trim(),
-  )
-  const res = await fetch(`https://www.pricecharting.com/api/product?t=${key}&q=${q}`)
+  const params = new URLSearchParams({
+    q: `pokemon ${qualifier} ${card.set} ${card.name} #${card.number}`.replace(/\s+/g, ' ').trim(),
+  })
+  if (key) params.set('t', key)
+  const res = await fetch(`${base}?${params}`)
   if (!res.ok) throw new Error(`pricecharting ${res.status}`)
   const data = await res.json()
   if (data.status !== 'success') return []

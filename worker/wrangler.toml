@@ -1,0 +1,10 @@
+name = "pokesearch-prices"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# Secrets (set with `npx wrangler@3 secret put <NAME>` from this directory):
+#   EBAY_CLIENT_ID       eBay App ID (Client ID)
+#   EBAY_CLIENT_SECRET   eBay Cert ID (Client Secret)
+#   JUSTTCG_KEY          JustTCG API key (optional)
+#   PPT_KEY              PokemonPriceTracker API key (optional)
+#   PRICECHARTING_KEY    PriceCharting token (optional)

@@ -38,8 +38,8 @@ export const en = {
   justTcgKeyLabel: 'JustTCG API key (free tier — EN + Japanese TCGplayer prices)',
   pptKeyLabel: 'PokemonPriceTracker API key (free tier — EN + Japanese prices)',
   pcKeyLabel: 'PriceCharting API key (paid — best for Japanese & graded)',
-  ebayKeyLabel: 'eBay Browse API OAuth token (listing-based ranges)',
-  corsProxyLabel: 'CORS proxy URL prefix (needed for eBay in-browser)',
+  workerUrlLabel:
+    'Price proxy URL (Cloudflare Worker — shared keys + eBay listing ranges; used when a key above is empty)',
   save: 'Save',
   saved: 'Saved.',
   indexStats: (cards: number, langs: string) => `${cards.toLocaleString()} cards indexed (${langs})`,

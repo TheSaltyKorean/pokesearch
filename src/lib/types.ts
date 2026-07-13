@@ -89,6 +89,8 @@ export interface Settings {
    * whenever its per-user key above is empty.
    */
   workerUrl?: string
+  /** Shared token for collection sync through the Worker (/collection). */
+  syncToken?: string
   /** Display currency for all prices (quotes are FX-converted); default USD */
   currency?: string
 }

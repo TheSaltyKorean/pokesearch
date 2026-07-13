@@ -171,18 +171,119 @@ async function upstreamFor(source, path, searchParams, env) {
   }
 }
 
+const COLLECTION_KEY = 'collection:v1'
+const COLLECTION_MAX_BYTES = 1_000_000
+
+function tokenMatches(request, env) {
+  if (!env.SYNC_PASSPHRASE) return false
+  const got = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '')
+  if (got.length !== env.SYNC_PASSPHRASE.length) return false
+  // Constant-time comparison; string equality would leak timing.
+  const enc = new TextEncoder()
+  const a = enc.encode(got)
+  const b = enc.encode(env.SYNC_PASSPHRASE)
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]
+  return diff === 0
+}
+
+/**
+ * Collection sync storage. Concurrency model: revisions, not clocks. Every
+ * stored blob carries a server-issued `rev`; a PUT must name the `baseRev`
+ * it built on and gets a 409 carrying the current blob when it doesn't
+ * match, so the client merges and retries. Client clocks never participate.
+ *
+ * A Durable Object executes one request at a time per object, which makes
+ * the rev check-and-write genuinely atomic — two same-baseRev PUTs cannot
+ * both get a 200 (KV's read-then-write could not guarantee that).
+ */
+export class CollectionDO {
+  constructor(ctx) {
+    this.storage = ctx.storage
+  }
+
+  async fetch(request) {
+    if (request.method === 'GET') {
+      const blob = (await this.storage.get(COLLECTION_KEY)) ?? { rev: null, entries: [] }
+      return new Response(JSON.stringify(blob), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      })
+    }
+    const body = await request.text()
+    // The cap is on encoded bytes; UTF-16 .length undercounts non-ASCII.
+    if (new TextEncoder().encode(body).length > COLLECTION_MAX_BYTES) {
+      return Response.json({ error: 'too large' }, { status: 413 })
+    }
+    let parsed
+    try {
+      parsed = JSON.parse(body)
+    } catch {
+      return Response.json({ error: 'invalid json' }, { status: 400 })
+    }
+    if (
+      !Array.isArray(parsed?.entries) ||
+      (parsed.baseRev !== null && typeof parsed.baseRev !== 'string')
+    ) {
+      return Response.json({ error: 'expected {baseRev: string|null, entries[]}' }, { status: 400 })
+    }
+    const cur = (await this.storage.get(COLLECTION_KEY)) ?? { rev: null, entries: [] }
+    if (parsed.baseRev !== cur.rev) {
+      // Conflict: hand back the current blob so the client can merge
+      // locally and retry against the fresh rev.
+      return Response.json(
+        { error: 'conflict', rev: cur.rev, entries: cur.entries },
+        { status: 409 },
+      )
+    }
+    const rev = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
+    await this.storage.put(COLLECTION_KEY, { rev, entries: parsed.entries })
+    return Response.json({ ok: true, rev })
+  }
+}
+
+/** Auth + CORS shim in front of the Durable Object. */
+async function handleCollection(request, env) {
+  if (!tokenMatches(request, env)) return json({ error: 'unauthorized' }, 401, request)
+  const stub = env.COLLECTION_DO.get(env.COLLECTION_DO.idFromName('default'))
+  const res = await stub.fetch('https://collection.internal/', {
+    method: request.method,
+    body: request.method === 'PUT' ? await request.text() : undefined,
+  })
+  const out = new Response(res.body, res)
+  for (const [k, v] of Object.entries(corsHeaders(request))) out.headers.set(k, v)
+  out.headers.set('Cache-Control', 'no-store')
+  return out
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(request) })
-    }
-    if (request.method !== 'GET') {
-      return json({ error: 'method not allowed' }, 405, request)
+      return new Response(null, {
+        status: 204,
+        headers: {
+          ...corsHeaders(request),
+          'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        },
+      })
     }
 
     const url = new URL(request.url)
     const [, source, ...rest] = url.pathname.split('/')
     const path = rest.join('/')
+
+    const isCollection = source === 'collection' && path === ''
+    if (request.method !== 'GET' && !(request.method === 'PUT' && isCollection)) {
+      return json({ error: 'method not allowed' }, 405, request)
+    }
+    if (isCollection) {
+      const origin0 = request.headers.get('Origin') ?? ''
+      if (!ALLOWED_ORIGINS.includes(origin0)) {
+        return json({ error: 'origin not allowed' }, 403, request)
+      }
+      return handleCollection(request, env)
+    }
 
     if (source === '' || source === 'health') {
       return json({ ok: true, sources: {

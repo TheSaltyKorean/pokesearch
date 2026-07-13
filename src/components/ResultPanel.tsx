@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import type { CardEntry, MatchResult, PriceQuote } from '../lib/types'
 import { fetchAllPrices, formatMoney, summarizeRange, variantsWithPrices } from '../pricing'
 import { newUid, putEntry } from '../db/collection'
+import { markCollectionMutated, schedulePush } from '../db/sync'
+import { loadSettings } from '../lib/types'
 import { t, CARD_LANG_NAMES } from '../i18n'
 import { variantLabel } from '../lib/variants'
 
@@ -45,8 +47,9 @@ export function ResultPanel({ matches, onClose }: Props) {
 
   async function addToCollection() {
     if (!selected) return
+    const uid = newUid()
     await putEntry({
-      uid: newUid(),
+      uid,
       cardId: selected.id,
       lang: selected.lang,
       name: selected.name,
@@ -61,6 +64,8 @@ export function ResultPanel({ matches, onClose }: Props) {
       lastPricedAt: quotes ? new Date().toISOString() : undefined,
       range,
     })
+    markCollectionMutated(uid)
+    schedulePush(loadSettings())
     setAdded(true)
   }
 

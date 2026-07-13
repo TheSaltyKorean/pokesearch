@@ -10,6 +10,7 @@ import {
 } from '../db/collection'
 import { fetchAllPrices, formatMoney, summarizeRange } from '../pricing'
 import { convertRange, getUsdRates } from '../pricing/fx'
+import { markCollectionMutated, schedulePush, whenSyncSettled } from '../db/sync'
 import { t, CARD_LANG_NAMES } from '../i18n'
 import { variantLabel } from '../lib/variants'
 
@@ -31,7 +32,18 @@ export function CollectionView() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      // Snapshotting the DB mid-pull would let the stale-refresh push rows
+      // the incoming server blob just deleted; wait for the startup sync.
+      // If the pull FAILED, show local data but skip the refresh entirely —
+      // re-pricing would stamp a fresh mutation and later overwrite server
+      // state this session never saw.
+      const syncState = await whenSyncSettled()
+      if (cancelled) return
       const all = await listCollection()
+      if (syncState === 'failed') {
+        setEntries(all)
+        return
+      }
       if (cancelled) return
       setEntries(all)
       const stale = staleEntries(all)
@@ -58,6 +70,11 @@ export function CollectionView() {
           // the other variants' quotes would be wrong. Keep the old range.
           const range = summarizeRange(quotes, e.variant)
           await putEntry({ ...e, range: range ?? e.range, lastPricedAt: new Date().toISOString() })
+          // Soft mark per successful write: re-priced rows sync when
+          // unopposed, but an automatic refresh must not beat a remote
+          // delete or manual edit in a merge.
+          markCollectionMutated(e.uid, true)
+          schedulePush(loadSettings())
         } catch {
           /* keep old price on failure */
         }
@@ -75,7 +92,11 @@ export function CollectionView() {
             for (const e of mismatched) {
               if (cancelled) break
               const converted = convertRange(e.range!, target, rates)
-              if (converted) await putEntry({ ...e, range: converted })
+              if (converted) {
+                await putEntry({ ...e, range: converted })
+                markCollectionMutated(e.uid, true) // soft: automatic write
+                schedulePush(loadSettings())
+              }
             }
           } catch {
             /* offline: keep old currency until rates are reachable */
@@ -94,8 +115,16 @@ export function CollectionView() {
 
   const total = entries.reduce((sum, e) => sum + (e.range?.mid ?? 0) * e.qty, 0)
 
+  // uid undefined = bulk/unattributed change (import) — merges then keep
+  // every local row rather than guessing.
+  function noteMutation(uid?: string) {
+    markCollectionMutated(uid)
+    schedulePush(loadSettings())
+  }
+
   async function update(e: CollectionEntry, patch: Partial<CollectionEntry>) {
     await putEntry({ ...e, ...patch })
+    noteMutation(e.uid)
     reload()
   }
 
@@ -110,6 +139,7 @@ export function CollectionView() {
 
   async function doImport(file: File) {
     await importCollection(await file.text())
+    noteMutation()
     reload()
   }
 
@@ -171,7 +201,7 @@ export function CollectionView() {
                 </label>
                 <button
                   className="danger"
-                  onClick={() => deleteEntry(e.uid).then(reload)}
+                  onClick={() => deleteEntry(e.uid).then(() => { noteMutation(e.uid); reload() })}
                 >
                   {t.remove}
                 </button>

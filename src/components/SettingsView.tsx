@@ -45,8 +45,7 @@ export function SettingsView() {
       {field('justTcgKey', t.justTcgKeyLabel, 'free key: justtcg.com → dashboard')}
       {field('pokemonPriceTrackerKey', t.pptKeyLabel, 'free key: pokemonpricetracker.com → account → API')}
       {field('priceChartingKey', t.pcKeyLabel)}
-      {field('ebayToken', t.ebayKeyLabel)}
-      {field('corsProxy', t.corsProxyLabel, 'https://your-proxy.example.com/?url=')}
+      {field('workerUrl', t.workerUrlLabel, 'https://pokesearch-prices.<you>.workers.dev')}
       <div className="actions">
         <button
           onClick={() => {

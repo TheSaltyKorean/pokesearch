@@ -46,13 +46,17 @@ export function CollectionView() {
             id: e.cardId,
             name: e.name,
             set: e.set,
-            setId: '',
+            setId: e.setId ?? '',
             number: e.number,
             lang: e.lang,
             img: e.img,
             src: e.lang === 'en' ? 'ptcg' : 'tcgdex',
           }, { background: true })
-          const range = summarizeRange(quotes, e.variant) ?? summarizeRange(quotes)
+          // No cross-variant fallback here: the background pass skips the
+          // shared-quota sources, so a variant they exclusively price (e.g.
+          // eBay's "graded") can come back quote-less — repricing it from
+          // the other variants' quotes would be wrong. Keep the old range.
+          const range = summarizeRange(quotes, e.variant)
           await putEntry({ ...e, range: range ?? e.range, lastPricedAt: new Date().toISOString() })
         } catch {
           /* keep old price on failure */

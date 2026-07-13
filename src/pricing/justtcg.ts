@@ -3,6 +3,20 @@ import { normalizeCardNumber, printingToVariant, setNamesOverlap } from './match
 
 const API = 'https://api.justtcg.com/v1'
 
+/** Direct API with the user's key, or the price-proxy Worker route. */
+interface Endpoint {
+  base: string
+  headers: Record<string, string>
+}
+
+function endpointFor(settings: Settings): Endpoint | undefined {
+  if (settings.justTcgKey) return { base: API, headers: { 'x-api-key': settings.justTcgKey } }
+  if (settings.workerUrl) {
+    return { base: settings.workerUrl.replace(/\/+$/, '') + '/justtcg', headers: {} }
+  }
+  return undefined
+}
+
 interface JustTcgVariant {
   condition?: string
   printing?: string
@@ -41,14 +55,14 @@ const SETS_TTL_MS = 24 * 60 * 60 * 1000
 // The game list rarely changes; fetch it once per session.
 let gamesPromise: Promise<{ id: string; name: string }[]> | undefined
 
-async function apiGet(key: string, path: string): Promise<unknown> {
-  const res = await fetch(`${API}${path}`, { headers: { 'x-api-key': key } })
+async function apiGet(ep: Endpoint, path: string): Promise<unknown> {
+  const res = await fetch(`${ep.base}${path}`, { headers: ep.headers })
   if (!res.ok) throw new Error(`justtcg ${res.status}`)
   return res.json()
 }
 
-async function listGames(key: string): Promise<{ id: string; name: string }[]> {
-  gamesPromise ??= apiGet(key, '/games')
+async function listGames(ep: Endpoint): Promise<{ id: string; name: string }[]> {
+  gamesPromise ??= apiGet(ep, '/games')
     .then((body) => ((body as { data?: { id: string; name: string }[] }).data ?? []))
     .catch((err) => {
       gamesPromise = undefined // allow retry on the next quote fetch
@@ -57,8 +71,8 @@ async function listGames(key: string): Promise<{ id: string; name: string }[]> {
   return gamesPromise
 }
 
-async function resolveGame(key: string, lang: string): Promise<string | undefined> {
-  const games = await listGames(key)
+async function resolveGame(ep: Endpoint, lang: string): Promise<string | undefined> {
+  const games = await listGames(ep)
   const pokemon = games.filter((g) => /pok[eé]mon/i.test(g.name) || /pokemon/i.test(g.id))
   const japan = pokemon.find((g) => /japan/i.test(g.name) || /japan/i.test(g.id))
   if (lang === 'ja') return japan?.id
@@ -67,7 +81,7 @@ async function resolveGame(key: string, lang: string): Promise<string | undefine
 }
 
 /** Find the JustTCG set id for a Japanese set code like "SV2a" (cached 24h). */
-async function resolveJaSet(key: string, game: string, setId: string): Promise<string | undefined> {
+async function resolveJaSet(ep: Endpoint, game: string, setId: string): Promise<string | undefined> {
   const cacheKey = SETS_CACHE_PREFIX + game
   let sets: { id: string; name: string }[] | undefined
   try {
@@ -77,7 +91,7 @@ async function resolveJaSet(key: string, game: string, setId: string): Promise<s
     /* no cache */
   }
   if (!sets) {
-    const body = (await apiGet(key, `/sets?game=${encodeURIComponent(game)}&limit=500`)) as {
+    const body = (await apiGet(ep, `/sets?game=${encodeURIComponent(game)}&limit=500`)) as {
       data?: { id: string; name: string }[]
     }
     sets = (body.data ?? []).map((s) => ({ id: s.id, name: s.name }))
@@ -129,22 +143,22 @@ export async function fetchJustTcgPrices(
   card: CardEntry,
   settings: Settings,
 ): Promise<PriceQuote[]> {
-  const key = settings.justTcgKey
-  if (!key) return []
+  const ep = endpointFor(settings)
+  if (!ep) return []
   // JustTCG carries English and Japanese Pokemon catalogs.
   if (card.lang !== 'en' && card.lang !== 'ja') return []
-  const game = await resolveGame(key, card.lang)
+  const game = await resolveGame(ep, card.lang)
   if (!game) return []
 
   let cards: JustTcgCard[]
   if (card.lang === 'ja') {
-    const set = await resolveJaSet(key, game, card.setId)
+    const set = await resolveJaSet(ep, game, card.setId)
     if (!set) return []
     const params = new URLSearchParams({ game, set, number: card.number, limit: '20' })
-    cards = ((await apiGet(key, `/cards?${params}`)) as { data?: JustTcgCard[] }).data ?? []
+    cards = ((await apiGet(ep, `/cards?${params}`)) as { data?: JustTcgCard[] }).data ?? []
   } else {
     const params = new URLSearchParams({ q: card.name, game, limit: '20' })
-    cards = ((await apiGet(key, `/cards?${params}`)) as { data?: JustTcgCard[] }).data ?? []
+    cards = ((await apiGet(ep, `/cards?${params}`)) as { data?: JustTcgCard[] }).data ?? []
   }
 
   // Same name+number pairs repeat across sets, so both a collector-number

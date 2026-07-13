@@ -65,6 +65,8 @@ export interface CollectionEntry {
   lang: string
   name: string
   set: string
+  /** Set code (e.g. "SV2a"); absent on entries saved before it was added. */
+  setId?: string
   number: string
   img: string
   variant: string
@@ -81,9 +83,12 @@ export interface Settings {
   justTcgKey?: string
   pokemonPriceTrackerKey?: string
   priceChartingKey?: string
-  ebayToken?: string
-  /** Optional CORS proxy prefix for sources that don't send CORS headers */
-  corsProxy?: string
+  /**
+   * Price-proxy (Cloudflare Worker) base URL. Holds shared API keys
+   * server-side and fronts sources that lack CORS (eBay). Used by a source
+   * whenever its per-user key above is empty.
+   */
+  workerUrl?: string
   /** Display currency for all prices (quotes are FX-converted); default USD */
   currency?: string
 }
@@ -92,7 +97,16 @@ export const SETTINGS_KEY = 'pokesearch.settings'
 
 export function loadSettings(): Settings {
   try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
+    // Settings that no longer exist (pre-worker eBay token / CORS proxy)
+    // have no UI to view or clear them; scrub them from storage too so the
+    // stale credential doesn't sit in localStorage indefinitely.
+    if ('ebayToken' in s || 'corsProxy' in s) {
+      delete s.ebayToken
+      delete s.corsProxy
+      saveSettings(s)
+    }
+    return s
   } catch {
     return {}
   }

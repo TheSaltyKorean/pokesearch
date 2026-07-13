@@ -13,8 +13,9 @@ Web app: point a camera at (or upload a photo of) a Pokemon card → identify th
   - `justtcg.ts` — free-tier user key (100 req/day); TCGplayer USD per condition×printing, EN + full JA catalog. Game slugs resolved at runtime via /games.
   - `pokemonpricetracker.ts` — free-tier user key (100 credits/day, 1/card); TCGplayer USD, EN + JA. Keep `limit` small: every returned card costs a credit.
   - `pricecharting.ts` — requires user API key (Settings); best for Japanese/graded.
-  - `ebay.ts` — requires user API key; sold-listing ranges, any language.
-  Results merged into a low/mid/high range per variant.
+  - `ebay.ts` — Browse API active-listing ranges (raw vs graded buckets), any language. Worker-only: eBay has no CORS and app tokens expire in 2h.
+  Results merged into a low/mid/high range per variant, FX-converted to the display currency (`fx.ts`, frankfurter.dev ECB rates).
+- **Price proxy:** `worker/` — Cloudflare Worker (`pokesearch-prices`) holding shared API keys as secrets (eBay client id/secret, JustTCG, PPT, PriceCharting) with per-URL edge caching to stretch free quotas. Key-gated adapters use it whenever their per-user key is empty and Settings→workerUrl is set. Deploy: `cd worker && npx wrangler@3 deploy` (wrangler v3 — repo machine is Node 20); secrets via `npx wrangler@3 secret put <NAME>`.
 - **Collection:** IndexedDB (`src/db/`). Export/import JSON. On app open, entries with prices >24h old are re-fetched.
 - **i18n:** `src/i18n/` string table, `en` only for now; add locales by dropping a file. Card *catalog* languages (ja/ko/zh/de/fr/it/es) are separate from UI language.
 - **Camera auto-capture:** `src/scanner/` — video frames sampled, edge density + frame stability inside the card guide box triggers auto-snap.

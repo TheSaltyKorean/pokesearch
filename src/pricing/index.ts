@@ -11,9 +11,10 @@ import { convertQuote, getUsdRates } from './fx'
 /**
  * Fetch quotes from every configured source; individual failures are
  * non-fatal. `background: true` (the collection's automatic stale-refresh)
- * skips the free-quota sources (JustTCG 100 req/day, PokemonPriceTracker
- * 100 credits/day) so re-pricing a collection can't silently burn the whole
- * daily quota — those two only run for foreground lookups.
+ * skips every shared-quota source (JustTCG 100 req/day, PokemonPriceTracker
+ * 100 credits/day, eBay and worker-routed PriceCharting on the shared
+ * Worker keys) so re-pricing a collection can't silently burn quotas —
+ * only unmetered sources and the user's own PriceCharting key run there.
  */
 export async function fetchAllPrices(
   card: CardEntry,
@@ -24,10 +25,15 @@ export async function fetchAllPrices(
     fetchPokemonTcgPrices(card, settings),
     fetchTcgdexPrices(card),
     ...(opts.background
-      ? []
-      : [fetchJustTcgPrices(card, settings), fetchPokemonPriceTrackerPrices(card, settings)]),
-    fetchPriceChartingPrices(card, settings),
-    fetchEbayPrices(card, settings),
+      ? settings.priceChartingKey
+        ? [fetchPriceChartingPrices(card, settings)]
+        : []
+      : [
+          fetchJustTcgPrices(card, settings),
+          fetchPokemonPriceTrackerPrices(card, settings),
+          fetchEbayPrices(card, settings),
+          fetchPriceChartingPrices(card, settings),
+        ]),
   ])
   const quotes: PriceQuote[] = []
   for (const r of results) {

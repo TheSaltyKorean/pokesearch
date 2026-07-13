@@ -40,6 +40,8 @@ export const en = {
   pcKeyLabel: 'PriceCharting API key (paid — best for Japanese & graded)',
   workerUrlLabel:
     'Price proxy URL (Cloudflare Worker — shared keys + eBay listing ranges; used when a key above is empty)',
+  syncTokenLabel:
+    'Collection sync passphrase (same value on every device syncs the collection through the price proxy)',
   save: 'Save',
   saved: 'Saved.',
   indexStats: (cards: number, langs: string) => `${cards.toLocaleString()} cards indexed (${langs})`,

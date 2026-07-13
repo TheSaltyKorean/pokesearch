@@ -45,8 +45,14 @@
 - justtcg/ppt/pricecharting adapters: use per-user key if set, else workerUrl route. Settings gains workerUrl.
 - DEPLOY STILL PENDING: needs Randy's Cloudflare account + `npx wrangler@3 login`, then `cd worker && npx wrangler@3 deploy` + `secret put` EBAY_CLIENT_ID / EBAY_CLIENT_SECRET / JUSTTCG_KEY, then paste the workers.dev URL into Settings→workerUrl.
 
+## 2026-07-12 (later) — worker deployed + collection sync (PR #8)
+- Randy ran `wrangler@3 login` in-session; registered subdomain saltykorean.workers.dev via CF API (PUT /accounts/{id}/workers/subdomain with wrangler's oauth_token from ~/.config/.wrangler/config/default.toml — wrangler v3 has no subdomain command). Deployed https://pokesearch-prices.saltykorean.workers.dev with secrets EBAY_CLIENT_ID/EBAY_CLIENT_SECRET/JUSTTCG_KEY (+SYNC_PASSPHRASE later). Fresh workers.dev TLS takes a few minutes to propagate (curl exit 35 until then).
+- PR #7 codex loop: r1 6 P2s (origin gate, param whitelist+clamp, sanitized cache keys, no-store on errors, compact PSA10 regex, CollectionEntry.setId for background eBay refresh); r2 3 more (per-path limits — /sets needs 500; lazy eBay token behind cache check; NFKD ASCII-folding so Pokémon/Nidoran♀ don't lose name search). All fixed.
+- Collection sync (Randy approved): passphrase lives ONLY in the worker secret SYNC_PASSPHRASE and Randy's Settings — NEVER in this repo (an early draft of this file leaked the original one; it was rotated and the branch history rewritten). KV namespace COLLECTION (id 99d3f6644e294d359e94a62cd59ae23b), GET/PUT /collection with Bearer SYNC_PASSPHRASE (constant-time compare), 1MB cap, no-store. Client: src/db/sync.ts — blob-level last-write-wins keyed on pokesearch.collection.mutatedAt in localStorage; pull-on-open in App.tsx (replace local if server newer, push if local newer); debounced 3s push after every mutation incl. background re-pricing. Settings.syncToken.
+- Design note: LWW at blob level means concurrent edits on two devices within one sync window lose one side; tombstone-free deletes handled by full replace on pull.
+
 - Open items:
-  - Deploy the worker (blocked on Cloudflare login); paste workerUrl into live Settings.
+  - Paste workerUrl + syncToken into live Settings (Randy or Claude — URL is non-secret; passphrase Randy types himself).
   - Randy: JustTCG key into Settings (or rely on worker); PriceCharting Pro sub decision; PokemonPriceTracker + pokemontcg.io accounts still uncreated.
   - Hash index initially covers a subset of sets; nightly action expands coverage.
   - Deployment target: GitHub Pages preferred; p50 container as fallback.

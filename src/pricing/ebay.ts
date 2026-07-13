@@ -53,11 +53,9 @@ export async function fetchEbayPrices(
   // Mechanics suffixes (ex/GX/V/VMAX/VSTAR/BREAK…) survive folding but are
   // not names — "リザードンVSTAR" must not become a bare "VSTAR" search, and
   // different sets reuse numbers ("VSTAR 118" is both S9 Charizard and S12
-  // Lugia). Any other Latin letter counts as a usable name though: real
-  // short names exist ("Ho-Oh V", the trainer "N") and must keep their
-  // name-based query — internal set ids like swsh12 mean nothing to sellers.
+  // Lugia). Only a non-mechanic Latin word counts as a usable name.
   const substantive = asciiName.replace(/\b(ex|gx|v|vmax|vstar|break|prism|lv\.?x)\b/gi, '').trim()
-  const useName = /[a-z]/i.test(substantive)
+  const useName = /[a-z]{3}/i.test(substantive)
   if (!useName && !card.setId) return []
   const terms = useName
     ? `pokemon ${qualifier} ${asciiName} ${card.number} ${ascii(card.set) || card.setId}`

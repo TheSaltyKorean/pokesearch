@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { loadSettings, saveSettings, type Settings } from '../lib/types'
 import { SUPPORTED_CURRENCIES } from '../pricing/fx'
+import { syncOnOpen } from '../db/sync'
 import { t } from '../i18n'
 
 export function SettingsView() {
@@ -46,10 +47,14 @@ export function SettingsView() {
       {field('pokemonPriceTrackerKey', t.pptKeyLabel, 'free key: pokemonpricetracker.com → account → API')}
       {field('priceChartingKey', t.pcKeyLabel)}
       {field('workerUrl', t.workerUrlLabel, 'https://pokesearch-prices.<you>.workers.dev')}
+      {field('syncToken', t.syncTokenLabel)}
       <div className="actions">
         <button
           onClick={() => {
             saveSettings(s)
+            // Reconcile right away when sync was just enabled/changed, so a
+            // stale local collection can't later overwrite the server copy.
+            syncOnOpen(s).catch((err) => console.warn('sync after save failed:', err))
             setSavedMsg(true)
             setTimeout(() => setSavedMsg(false), 1500)
           }}

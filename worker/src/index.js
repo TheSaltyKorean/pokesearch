@@ -32,19 +32,6 @@ const CACHE_TTL = {
 // eBay application tokens last 7200s; cache per isolate with a safety margin.
 let ebayToken = { value: null, expiresAt: 0 }
 
-// PriceCharting allows 1 call/second per token and can revoke access when
-// exceeded. Space upstream calls out per isolate. (Distinct isolates/colos
-// can't see each other's slots — a true global limit would need a Durable
-// Object — but with the 12h edge cache in front, concurrent uncached
-// lookups for distinct cards are rare.)
-let pcNextSlot = 0
-async function pcThrottle() {
-  const now = Date.now()
-  const wait = Math.max(0, pcNextSlot - now)
-  pcNextSlot = Math.max(now, pcNextSlot) + 1100
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
-}
-
 function corsHeaders(request) {
   const origin = request.headers.get('Origin') ?? ''
   const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]
@@ -162,7 +149,6 @@ async function upstreamFor(source, path, searchParams, env) {
       return {
         url: `https://www.pricecharting.com/api/${path}?${upstream}`,
         headers: {},
-        beforeFetch: pcThrottle,
         cacheParams: params, // key excludes the token
       }
     }
@@ -171,13 +157,95 @@ async function upstreamFor(source, path, searchParams, env) {
   }
 }
 
+const COLLECTION_KEY = 'collection:v1'
+const COLLECTION_MAX_BYTES = 1_000_000
+
+function tokenMatches(request, env) {
+  if (!env.SYNC_PASSPHRASE) return false
+  const got = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '')
+  if (got.length !== env.SYNC_PASSPHRASE.length) return false
+  // Constant-time comparison; string equality would leak timing.
+  const enc = new TextEncoder()
+  const a = enc.encode(got)
+  const b = enc.encode(env.SYNC_PASSPHRASE)
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]
+  return diff === 0
+}
+
+/** GET/PUT the synced collection blob (auth: Bearer SYNC_PASSPHRASE). */
+async function handleCollection(request, env) {
+  if (!tokenMatches(request, env)) return json({ error: 'unauthorized' }, 401, request)
+  if (request.method === 'GET') {
+    const blob = await env.COLLECTION.get(COLLECTION_KEY)
+    if (blob === null) return json({ updatedAt: null, entries: [] }, 200, request)
+    return new Response(blob, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+        ...corsHeaders(request),
+      },
+    })
+  }
+  // PUT
+  const body = await request.text()
+  if (body.length > COLLECTION_MAX_BYTES) return json({ error: 'too large' }, 413, request)
+  let parsed
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return json({ error: 'invalid json' }, 400, request)
+  }
+  if (typeof parsed?.updatedAt !== 'string' || !Array.isArray(parsed?.entries)) {
+    return json({ error: 'expected {updatedAt, entries[]}' }, 400, request)
+  }
+  // The client's last-write-wins logic is timestamp-based, so a delayed
+  // request carrying an older snapshot must not overwrite a newer blob.
+  // KV has no compare-and-swap, so this read-then-write can still interleave
+  // with a concurrent PUT and let the older body land last without a 409 (a
+  // Durable Object would close that window). The system self-heals: the
+  // device holding the newer collection keeps its newer local mutatedAt, so
+  // its next syncOnOpen sees an older server blob and re-pushes.
+  const existing = await env.COLLECTION.get(COLLECTION_KEY)
+  if (existing) {
+    try {
+      const cur = JSON.parse(existing)
+      if (typeof cur?.updatedAt === 'string' && cur.updatedAt >= parsed.updatedAt) {
+        return json({ error: 'stale write', serverUpdatedAt: cur.updatedAt }, 409, request)
+      }
+    } catch {
+      /* unreadable existing blob: allow overwrite */
+    }
+  }
+  await env.COLLECTION.put(COLLECTION_KEY, body)
+  return json({ ok: true, updatedAt: parsed.updatedAt }, 200, request)
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(request) })
+      return new Response(null, {
+        status: 204,
+        headers: {
+          ...corsHeaders(request),
+          'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        },
+      })
     }
-    if (request.method !== 'GET') {
+
+    const url0 = new URL(request.url)
+    const isCollection = url0.pathname === '/collection'
+    if (request.method !== 'GET' && !(request.method === 'PUT' && isCollection)) {
       return json({ error: 'method not allowed' }, 405, request)
+    }
+    if (isCollection) {
+      const origin0 = request.headers.get('Origin') ?? ''
+      if (!ALLOWED_ORIGINS.includes(origin0)) {
+        return json({ error: 'origin not allowed' }, 403, request)
+      }
+      return handleCollection(request, env)
     }
 
     const url = new URL(request.url)
@@ -226,7 +294,6 @@ export default {
       return res
     }
 
-    if (upstream.beforeFetch) await upstream.beforeFetch()
     let headers = upstream.headers ?? {}
     if (upstream.authorize) {
       try {

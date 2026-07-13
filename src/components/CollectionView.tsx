@@ -10,6 +10,7 @@ import {
 } from '../db/collection'
 import { fetchAllPrices, formatMoney, summarizeRange } from '../pricing'
 import { convertRange, getUsdRates } from '../pricing/fx'
+import { markCollectionMutated, schedulePush, whenSyncSettled } from '../db/sync'
 import { t, CARD_LANG_NAMES } from '../i18n'
 import { variantLabel } from '../lib/variants'
 
@@ -31,7 +32,18 @@ export function CollectionView() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      // Snapshotting the DB mid-pull would let the stale-refresh push rows
+      // the incoming server blob just deleted; wait for the startup sync.
+      // If the pull FAILED, show local data but skip the refresh entirely —
+      // re-pricing would stamp a fresh mutation and later overwrite server
+      // state this session never saw.
+      const syncState = await whenSyncSettled()
+      if (cancelled) return
       const all = await listCollection()
+      if (syncState === 'failed') {
+        setEntries(all)
+        return
+      }
       if (cancelled) return
       setEntries(all)
       const stale = staleEntries(all)
@@ -81,6 +93,9 @@ export function CollectionView() {
       if (!cancelled) {
         setRefreshing(false)
         reload()
+        // Re-priced/converted values should reach the other devices too.
+        markCollectionMutated()
+        schedulePush(loadSettings())
       }
     })()
     return () => {
@@ -90,8 +105,14 @@ export function CollectionView() {
 
   const total = entries.reduce((sum, e) => sum + (e.range?.mid ?? 0) * e.qty, 0)
 
+  function noteMutation() {
+    markCollectionMutated()
+    schedulePush(loadSettings())
+  }
+
   async function update(e: CollectionEntry, patch: Partial<CollectionEntry>) {
     await putEntry({ ...e, ...patch })
+    noteMutation()
     reload()
   }
 
@@ -106,6 +127,7 @@ export function CollectionView() {
 
   async function doImport(file: File) {
     await importCollection(await file.text())
+    noteMutation()
     reload()
   }
 
@@ -167,7 +189,7 @@ export function CollectionView() {
                 </label>
                 <button
                   className="danger"
-                  onClick={() => deleteEntry(e.uid).then(reload)}
+                  onClick={() => deleteEntry(e.uid).then(() => { noteMutation(); reload() })}
                 >
                   {t.remove}
                 </button>

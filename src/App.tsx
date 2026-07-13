@@ -10,7 +10,8 @@ import {
   matchImage,
   searchByName,
 } from './matching'
-import type { CardEntry, MatchResult } from './lib/types'
+import { loadSettings, type CardEntry, type MatchResult } from './lib/types'
+import { syncOnOpen } from './db/sync'
 import { t, CARD_LANG_NAMES } from './i18n'
 import './app.css'
 
@@ -26,6 +27,7 @@ export default function App() {
 
   useEffect(() => {
     ensureIndexesLoaded().then(() => setReady(true))
+    syncOnOpen(loadSettings()).catch((err) => console.warn('collection sync failed:', err))
   }, [])
 
   const handleCapture = useCallback((canvas: HTMLCanvasElement) => {

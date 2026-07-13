@@ -2,7 +2,12 @@ name = "pokesearch-prices"
 main = "src/index.js"
 compatibility_date = "2026-07-01"
 
+[[kv_namespaces]]
+binding = "COLLECTION"
+id = "99d3f6644e294d359e94a62cd59ae23b"
+
 # Secrets (set with `npx wrangler@3 secret put <NAME>` from this directory):
+#   SYNC_PASSPHRASE      shared token for /collection GET/PUT (collection sync)
 #   EBAY_CLIENT_ID       eBay App ID (Client ID)
 #   EBAY_CLIENT_SECRET   eBay Cert ID (Client Secret)
 #   JUSTTCG_KEY          JustTCG API key (optional)

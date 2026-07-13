@@ -37,14 +37,24 @@ export async function fetchEbayPrices(
   const qualifier = LANG_QUALIFIER[card.lang] ?? ''
   // eBay listings are titled in English (romanized set codes + collector
   // numbers), so searching a non-Latin card name finds almost nothing —
-  // "SV2a 006" outperforms "リザードンex" ~30x. Use set code + number there.
+  // "SV2a 006" outperforms "リザードンex" ~30x. Names that are merely
+  // accented ("Pokémon Center", "Nidoran ♀") are folded to ASCII and kept;
+  // only names with no real Latin word left fall back to set code + number.
   // Without a set code (old collection entries) a bare number would mix
   // unrelated sets, so skip rather than risk wrong prices.
-  const nonLatinName = /[^\x20-\x7e]/.test(card.name)
-  if (nonLatinName && !card.setId) return []
-  const terms = nonLatinName
-    ? `pokemon ${qualifier} ${card.setId} ${card.number}`
-    : `pokemon ${qualifier} ${card.name} ${card.number} ${card.set}`
+  const ascii = (s: string) =>
+    s
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^\x20-\x7e]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const asciiName = ascii(card.name)
+  const useName = /[a-z]{3}/i.test(asciiName)
+  if (!useName && !card.setId) return []
+  const terms = useName
+    ? `pokemon ${qualifier} ${asciiName} ${card.number} ${ascii(card.set)}`
+    : `pokemon ${qualifier} ${card.setId} ${card.number}`
   const q = encodeURIComponent(terms.replace(/\s+/g, ' ').trim())
   const res = await fetch(`${base}/ebay/search?q=${q}&category_ids=183454&limit=50`)
   if (!res.ok) throw new Error(`ebay proxy ${res.status}`)

@@ -105,16 +105,20 @@ async function upstreamFor(source, path, searchParams, env) {
       if (!params.get('q')) return null
       return {
         url: `https://api.ebay.com/buy/browse/v1/item_summary/search?${params}`,
-        headers: { Authorization: `Bearer ${await getEbayToken(env)}` },
+        // Deferred so cache hits don't mint OAuth tokens (and a token-
+        // endpoint hiccup can't break requests the cache could serve).
+        authorize: async () => ({ Authorization: `Bearer ${await getEbayToken(env)}` }),
         cacheParams: params,
       }
     }
     case 'justtcg': {
       if (!env.JUSTTCG_KEY || !/^(cards|sets|games)$/.test(path)) return null
+      // The JA flow lists all sets once (limit=500) to resolve set codes;
+      // only card queries are clamped tight.
       const params = sanitizeParams(
         searchParams,
         ['q', 'game', 'set', 'number', 'limit', 'offset'],
-        20,
+        path === 'cards' ? 20 : 500,
       )
       return {
         url: `https://api.justtcg.com/v1/${path}?${params}`,
@@ -208,7 +212,15 @@ export default {
       return res
     }
 
-    const upstreamRes = await fetch(upstream.url, { headers: upstream.headers })
+    let headers = upstream.headers ?? {}
+    if (upstream.authorize) {
+      try {
+        headers = { ...headers, ...(await upstream.authorize()) }
+      } catch (err) {
+        return json({ error: String(err) }, 502, request)
+      }
+    }
+    const upstreamRes = await fetch(upstream.url, { headers })
     const body = await upstreamRes.text()
     // Freshness only on success: a cached 401/429/5xx would keep prices
     // blank in the browser for the whole TTL after the source recovers.

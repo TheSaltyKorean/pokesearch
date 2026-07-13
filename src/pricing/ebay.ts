@@ -50,10 +50,15 @@ export async function fetchEbayPrices(
       .replace(/\s+/g, ' ')
       .trim()
   const asciiName = ascii(card.name)
-  const useName = /[a-z]{3}/i.test(asciiName)
+  // Mechanics suffixes (ex/GX/V/VMAX/VSTAR/BREAK…) survive folding but are
+  // not names — "リザードンVSTAR" must not become a bare "VSTAR" search, and
+  // different sets reuse numbers ("VSTAR 118" is both S9 Charizard and S12
+  // Lugia). Only a non-mechanic Latin word counts as a usable name.
+  const substantive = asciiName.replace(/\b(ex|gx|v|vmax|vstar|break|prism|lv\.?x)\b/gi, '').trim()
+  const useName = /[a-z]{3}/i.test(substantive)
   if (!useName && !card.setId) return []
   const terms = useName
-    ? `pokemon ${qualifier} ${asciiName} ${card.number} ${ascii(card.set)}`
+    ? `pokemon ${qualifier} ${asciiName} ${card.number} ${ascii(card.set) || card.setId}`
     : `pokemon ${qualifier} ${card.setId} ${card.number}`
   const q = encodeURIComponent(terms.replace(/\s+/g, ' ').trim())
   const res = await fetch(`${base}/ebay/search?q=${q}&category_ids=183454&limit=50`)

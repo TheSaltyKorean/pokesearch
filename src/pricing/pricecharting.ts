@@ -7,6 +7,17 @@ const LANG_QUALIFIER: Record<string, string> = {
   'zh-cn': 'chinese',
 }
 
+// PriceCharting enforces 1 call/second per token (exceeding it can revoke
+// API access). Space out request starts, sharing the budget across
+// concurrent callers such as the collection's stale-refresh loop.
+let nextSlot = 0
+async function rateLimit(): Promise<void> {
+  const now = Date.now()
+  const wait = Math.max(0, nextSlot - now)
+  nextSlot = Math.max(now, nextSlot) + 1100
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+}
+
 /**
  * PriceCharting — requires the user's API key (paid subscription), entered in
  * Settings. Strongest source for Japanese cards and graded values. The API
@@ -27,6 +38,7 @@ export async function fetchPriceChartingPrices(
     q: `pokemon ${qualifier} ${card.set} ${card.name} #${card.number}`.replace(/\s+/g, ' ').trim(),
   })
   if (key) params.set('t', key)
+  await rateLimit()
   const res = await fetch(`${base}?${params}`)
   if (!res.ok) throw new Error(`pricecharting ${res.status}`)
   const data = await res.json()

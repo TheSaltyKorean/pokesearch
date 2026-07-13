@@ -323,10 +323,13 @@ export async function syncOnOpen(
         if (!localUids.has(e.uid)) await putEntry(e)
       }
       saveState(ep, {
-        ...state,
         rev: server.rev,
         everSynced: true,
         baseUids: server.entries.map((e) => e.uid),
+        // Acknowledge pre-sync history first (an old import may have left a
+        // '*' marker); the per-uid marks below re-flag every local row, so
+        // nothing is lost and merges stay per-row instead of keep-all.
+        ackedSeq: dirtySeq(),
       })
       for (const e of current) markCollectionMutated(e.uid)
       await pushNow(settings)
@@ -334,39 +337,46 @@ export async function syncOnOpen(
     }
 
     let outcome: 'pulled' | 'pushed' | 'noop' = 'noop'
-    if (dirtySeq() > state.ackedSeq) {
-      // This endpoint hasn't acknowledged the latest local edits. Merge the
-      // blob we just pulled BEFORE resolving, so consumers gated on
-      // whenSyncSettled() (the stale-price refresh) see remote deletes and
-      // edits applied — then push the reconciled DB.
-      await mergeServerBlob(ep, server)
+    if (server.rev === null && state.rev !== null && current.length > 0) {
+      // The server is pristine again at an endpoint we had synced with
+      // (storage reset/recreated). A real remote "delete everything"
+      // carries a non-null rev, so don't mirror this wipe — re-seed the
+      // server from local. Checked BEFORE the dirty branch: merging a
+      // pristine blob against the old base would delete local rows.
       saveState(ep, {
-        ...loadState(ep),
-        rev: server.rev,
+        rev: null,
         everSynced: true,
-        baseUids: server.entries.map((e) => e.uid),
+        baseUids: [],
+        ackedSeq: dirtySeq(), // superseded by the per-uid re-marks below
       })
+      for (const e of current) markCollectionMutated(e.uid)
+      schedulePush(settings)
+      outcome = 'pushed'
+    } else if (dirtySeq() > state.ackedSeq) {
+      // This endpoint hasn't acknowledged the latest local edits. If the
+      // server also moved, merge the pulled blob BEFORE resolving so
+      // consumers gated on whenSyncSettled() (the stale-price refresh) see
+      // remote deletes/edits applied. Same-rev servers have nothing to
+      // merge — merging would revert unpushed soft (auto-refresh) writes.
+      if ((server.rev ?? null) !== (state.rev ?? null)) {
+        await mergeServerBlob(ep, server)
+        saveState(ep, {
+          ...loadState(ep),
+          rev: server.rev,
+          everSynced: true,
+          baseUids: server.entries.map((e) => e.uid),
+        })
+      }
       schedulePush(settings)
       outcome = 'pushed'
     } else if ((server.rev ?? null) !== (state.rev ?? null)) {
-      if (server.rev === null && current.length > 0) {
-        // The server is pristine again at an endpoint we had synced with
-        // (storage reset/recreated). A real remote "delete everything"
-        // carries a non-null rev, so don't mirror this wipe — re-seed the
-        // server from local instead.
-        saveState(ep, { ...state, rev: null, everSynced: true, baseUids: [] })
-        for (const e of current) markCollectionMutated(e.uid)
-        schedulePush(settings)
-        outcome = 'pushed'
-      } else {
-        const keep = new Set(server.entries.map((e) => e.uid))
-        for (const e of current) {
-          if (!keep.has(e.uid)) await deleteEntry(e.uid)
-        }
-        for (const e of server.entries) await putEntry(e)
-        saveState(ep, { ...state, rev: server.rev, everSynced: true, baseUids: [...keep] })
-        outcome = 'pulled'
+      const keep = new Set(server.entries.map((e) => e.uid))
+      for (const e of current) {
+        if (!keep.has(e.uid)) await deleteEntry(e.uid)
       }
+      for (const e of server.entries) await putEntry(e)
+      saveState(ep, { ...state, rev: server.rev, everSynced: true, baseUids: [...keep] })
+      outcome = 'pulled'
     } else if (!state.everSynced) {
       saveState(ep, { ...state, everSynced: true })
     }

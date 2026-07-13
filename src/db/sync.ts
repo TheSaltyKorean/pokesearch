@@ -174,7 +174,11 @@ async function pushNow(settings: Settings, attempt = 0, flush = false): Promise<
     if (gen !== generation) return
     await mergeServerBlob(ep, server)
     const st = loadState(ep)
-    saveState(ep, { ...st, rev: server.rev })
+    // The merged state incorporates this server blob, so it IS the new
+    // common base — leaving baseUids stale would make a remote-added row
+    // look like a local add on the next conflict and resurrect it past a
+    // newer remote delete.
+    saveState(ep, { ...st, rev: server.rev, baseUids: server.entries.map((e) => e.uid) })
     if (attempt < PUSH_MAX_RETRIES) return pushNow(settings, attempt + 1)
     console.warn('collection push gave up after repeated conflicts')
     return
@@ -314,8 +318,17 @@ export async function syncOnOpen(
 
     let outcome: 'pulled' | 'pushed' | 'noop' = 'noop'
     if (dirtySeq() > state.ackedSeq) {
-      // This endpoint hasn't acknowledged the latest local edits: merge and
-      // push via pushNow's 409 path.
+      // This endpoint hasn't acknowledged the latest local edits. Merge the
+      // blob we just pulled BEFORE resolving, so consumers gated on
+      // whenSyncSettled() (the stale-price refresh) see remote deletes and
+      // edits applied — then push the reconciled DB.
+      await mergeServerBlob(ep, server)
+      saveState(ep, {
+        ...loadState(ep),
+        rev: server.rev,
+        everSynced: true,
+        baseUids: server.entries.map((e) => e.uid),
+      })
       schedulePush(settings)
       outcome = 'pushed'
     } else if ((server.rev ?? null) !== (state.rev ?? null)) {

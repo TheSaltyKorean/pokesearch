@@ -51,10 +51,15 @@ export function SettingsView() {
       <div className="actions">
         <button
           onClick={() => {
+            // Reconcile only when the sync fields actually changed —
+            // syncOnOpen cancels queued pushes, and an unrelated save (e.g.
+            // currency) must not drop a pending collection upload.
+            const prev = loadSettings()
+            const syncChanged = prev.workerUrl !== s.workerUrl || prev.syncToken !== s.syncToken
             saveSettings(s)
-            // Reconcile right away when sync was just enabled/changed, so a
-            // stale local collection can't later overwrite the server copy.
-            syncOnOpen(s).catch((err) => console.warn('sync after save failed:', err))
+            if (syncChanged) {
+              syncOnOpen(s).catch((err) => console.warn('sync after save failed:', err))
+            }
             setSavedMsg(true)
             setTimeout(() => setSavedMsg(false), 1500)
           }}

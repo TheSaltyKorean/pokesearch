@@ -117,19 +117,41 @@ async function fetchImage(url, headers = {}) {
 }
 
 const JP_BASE = 'https://www.pokemon-card.com'
-const JP_UA = { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) pokesearch-index-builder' }
+const JP_UA = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+}
+// pokemon-card.com WAF-bans the IP for a while after a few hundred fast
+// requests to the PHP endpoints (static images are unaffected). Serialize
+// every PHP request behind a delay, and on 403/429 back off for minutes.
+const JP_DELAY_MS = Number(arg('jp-delay', '600'))
+let jpQueue = Promise.resolve()
+function jpThrottled(fn) {
+  const run = jpQueue.then(fn)
+  jpQueue = run.then(
+    () => new Promise((r) => setTimeout(r, JP_DELAY_MS)),
+    () => new Promise((r) => setTimeout(r, JP_DELAY_MS)),
+  )
+  return run
+}
 
-async function fetchTextRetry(url, headers = {}) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const res = await fetch(url, { headers })
-      if (!res.ok) throw new Error(`${res.status} ${url}`)
-      return await res.text()
-    } catch (e) {
-      if (attempt === 2) throw e
+async function jpFetch(url, parse) {
+  return jpThrottled(async () => {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const res = await fetch(url, { headers: JP_UA }).catch(() => null)
+      if (res?.ok) return parse(res)
+      const status = res?.status ?? 'network'
+      if (status === 403 || status === 429) {
+        const wait = Math.min(10 * 60_000, 60_000 * 2 ** attempt)
+        console.warn(`  [jpofficial] ${status} — backing off ${Math.round(wait / 1000)}s`)
+        await new Promise((r) => setTimeout(r, wait))
+        continue
+      }
+      if (attempt === 5) throw new Error(`${status} ${url}`)
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
     }
-  }
+    throw new Error(`gave up ${url}`)
+  })
 }
 
 /**
@@ -141,12 +163,12 @@ async function jpListAll() {
   for (const type of ['pokemon', 'trainer', 'energy']) {
     const url = (page) =>
       `${JP_BASE}/card-search/resultAPI.php?keyword=&se_ta=${type}&regulation_sidebar_form=all&sm_and_keyword=true&page=${page}`
-    const first = await fetchJson(url(1), JP_UA)
+    const first = await jpFetch(url(1), (r) => r.json())
     const maxPage = Number(first.maxPage) || 1
     console.log(`[jpofficial/${type}] ${first.hitCnt} cards, ${maxPage} pages`)
     let pages = [first]
     for (let p = 2; p <= maxPage; p++) {
-      pages.push(await fetchJson(url(p), JP_UA))
+      pages.push(await jpFetch(url(p), (r) => r.json()))
       if (p % 50 === 0) console.log(`  listed page ${p}/${maxPage}`)
     }
     for (const pg of pages) {
@@ -167,15 +189,15 @@ async function jpListAll() {
 
 /** Collection number ("081", "183", …) from the card details page. */
 async function jpCardNumber(srcId) {
-  const html = await fetchTextRetry(
+  const html = await jpFetch(
     `${JP_BASE}/card-search/details.php/card/${srcId}/regu/all`,
-    JP_UA,
+    (r) => r.text(),
   )
   const m = /&nbsp;([0-9A-Za-z-]+)&nbsp;\/&nbsp;[0-9A-Za-z-]+&nbsp;/.exec(html)
   return m ? m[1] : null
 }
 
-async function buildJpOfficial(existing) {
+async function buildJpOfficial(existing, checkpoint) {
   const matchRe = MATCH ? new RegExp(MATCH) : null
   const knownSrc = new Set()
   for (const { entry } of existing.values()) if (entry.srcId) knownSrc.add(entry.srcId)
@@ -223,6 +245,8 @@ async function buildJpOfficial(existing) {
         console.warn(`  skip jp:${item.srcId} (${item.setCode} ${item.name}): ${e.message}`)
       }
       if (done % 100 === 0) console.log(`  ${done}/${todo.length}`)
+      // Progress is only durable once written; a long run may be interrupted.
+      if (done % 500 === 0 && checkpoint) await checkpoint()
     }
   }
   await Promise.all(Array.from({ length: CONCURRENCY }, worker))
@@ -320,7 +344,10 @@ async function main() {
   }
 
   if (SOURCE === 'jpofficial') {
-    await buildJpOfficial(existing)
+    let cpChain = Promise.resolve()
+    const checkpoint = () => (cpChain = cpChain.then(() => writeIndex(existing, metaPath, binPath)))
+    await buildJpOfficial(existing, checkpoint)
+    await cpChain
     await writeIndex(existing, metaPath, binPath)
     return
   }

@@ -10,6 +10,8 @@ export const en = {
   scanUpload: 'Upload a photo',
   scanStarting: 'Starting camera…',
   scanNoCamera: 'No camera available — upload a photo instead.',
+  torchOn: 'Flashlight on',
+  torchOff: 'Flashlight off',
   matching: 'Matching…',
   candidates: 'Best matches',
   confidence: 'match',

@@ -26,13 +26,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # Re-hash the configured baseline sets (picks up new/errata printings)
-      - name: Baseline English sets
-        run: node scripts/build-index.mjs --source ptcg --sets base1,sv3pt5
+      # Full catalogs; the merge is incremental so only new cards are hashed
+      - name: English catalog (Pokemon TCG API)
+        run: node scripts/build-index.mjs --source ptcg --sets all
         env:
           POKEMONTCG_API_KEY: ${{ secrets.POKEMONTCG_API_KEY }}
-      - name: Baseline Japanese sets (full catalog; merge skips known cards)
+      - name: Japanese catalog, SV era (TCGdex)
         run: node scripts/build-index.mjs --source tcgdex --lang ja --sets all
+      # TCGdex has no JA data before ~2022; the official card DB fills SM/SWSH.
+      # Korean cards mirror Japanese sets 1:1, so this also powers KO scans.
+      - name: Japanese catalog, SM/SWSH era (pokemon-card.com)
+        run: node scripts/build-index.mjs --source jpofficial --match '^S(?!V)'
       - name: Extra English sets
         if: ${{ github.event.inputs.extra_en_sets }}
         run: node scripts/build-index.mjs --source ptcg --sets "${{ github.event.inputs.extra_en_sets }}"

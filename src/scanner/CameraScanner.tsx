@@ -14,8 +14,11 @@ interface Props {
  */
 export function CameraScanner({ onCapture }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const trackRef = useRef<MediaStreamTrack | null>(null)
   const [status, setStatus] = useState<'starting' | 'ready' | 'nocamera'>('starting')
   const [steady, setSteady] = useState(0)
+  const [torchAvailable, setTorchAvailable] = useState(false)
+  const [torchOn, setTorchOn] = useState(false)
   const captured = useRef(false)
 
   useEffect(() => {
@@ -36,6 +39,14 @@ export function CameraScanner({ onCapture }: Props) {
         video.srcObject = stream
         await video.play()
         setStatus('ready')
+
+        // Torch (flashlight) is exposed as a track capability on devices
+        // that have one (Android Chrome); iOS Safari doesn't support it.
+        const track = stream.getVideoTracks()[0] ?? null
+        trackRef.current = track
+        const caps = track?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean }) | undefined
+        setTorchAvailable(Boolean(caps?.torch))
+        setTorchOn(false)
 
         const work = document.createElement('canvas')
         timer = setInterval(() => {
@@ -77,8 +88,21 @@ export function CameraScanner({ onCapture }: Props) {
     return () => {
       if (timer) clearInterval(timer)
       stream?.getTracks().forEach((tr) => tr.stop())
+      trackRef.current = null
     }
   }, [onCapture])
+
+  async function toggleTorch() {
+    const track = trackRef.current
+    if (!track) return
+    const next = !torchOn
+    try {
+      await track.applyConstraints({ advanced: [{ torch: next } as MediaTrackConstraintSet] })
+      setTorchOn(next)
+    } catch {
+      setTorchAvailable(false)
+    }
+  }
 
   function manualCapture() {
     const video = videoRef.current
@@ -106,6 +130,11 @@ export function CameraScanner({ onCapture }: Props) {
           <button onClick={manualCapture} disabled={status !== 'ready'}>
             {t.scanManual}
           </button>
+          {torchAvailable && (
+            <button onClick={toggleTorch} aria-pressed={torchOn}>
+              {torchOn ? '🔦 ' + t.torchOn : '🔦 ' + t.torchOff}
+            </button>
+          )}
         </>
       )}
     </div>

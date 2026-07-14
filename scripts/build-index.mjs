@@ -12,6 +12,14 @@
  *   node scripts/build-index.mjs --source tcgdex --lang ja --sets sv8a,sv7
  *   node scripts/build-index.mjs --source tcgdex --lang ja --sets all
  *   node scripts/build-index.mjs --source tcgdex --lang ja --list-sets
+ *   node scripts/build-index.mjs --source jpofficial --match '^(SM|S)'
+ *
+ * jpofficial scrapes the official pokemon-card.com card database (covers
+ * XY era → present, including all SM/SWSH sets missing from TCGdex). It is
+ * always lang=ja. Korean cards mirror Japanese sets 1:1 (same art), so this
+ * catalog is also what Korean scans match against. --match filters set codes
+ * by regex. Cards already indexed are skipped via the srcId field, which is
+ * also back-filled onto TCGdex-sourced entries the first time they're seen.
  *
  * Existing entries are merged (upsert by card id), so the index grows
  * set-by-set. The nightly GitHub Action calls this for configured sets.
@@ -25,11 +33,12 @@ function arg(name, def) {
   const i = args.indexOf(`--${name}`)
   return i >= 0 ? args[i + 1] : def
 }
-const SOURCE = arg('source', 'ptcg') // ptcg | tcgdex
-const LANG = SOURCE === 'ptcg' ? 'en' : arg('lang', 'en')
+const SOURCE = arg('source', 'ptcg') // ptcg | tcgdex | jpofficial
+const LANG = SOURCE === 'ptcg' ? 'en' : SOURCE === 'jpofficial' ? 'ja' : arg('lang', 'en')
 const OUT = arg('out', 'public/carddata')
 const SETS = (arg('sets', '') || '').split(',').filter(Boolean)
-const CONCURRENCY = Number(arg('concurrency', '8'))
+const MATCH = arg('match', '') // jpofficial: regex filter on set codes
+const CONCURRENCY = Number(arg('concurrency', SOURCE === 'jpofficial' ? '4' : '8'))
 const API_KEY = process.env.POKEMONTCG_API_KEY
 
 const W = 9
@@ -94,10 +103,10 @@ async function fetchJson(url, headers = {}) {
   }
 }
 
-async function fetchImage(url) {
+async function fetchImage(url, headers = {}) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(url)
+      const res = await fetch(url, { headers })
       if (!res.ok) throw new Error(`${res.status} ${url}`)
       return Buffer.from(await res.arrayBuffer())
     } catch (e) {
@@ -105,6 +114,119 @@ async function fetchImage(url) {
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
     }
   }
+}
+
+const JP_BASE = 'https://www.pokemon-card.com'
+const JP_UA = { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) pokesearch-index-builder' }
+
+async function fetchTextRetry(url, headers = {}) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, { headers })
+      if (!res.ok) throw new Error(`${res.status} ${url}`)
+      return await res.text()
+    } catch (e) {
+      if (attempt === 2) throw e
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
+    }
+  }
+}
+
+/**
+ * Enumerate the whole pokemon-card.com card DB (XY era → present).
+ * Returns [{srcId, name, setCode, img}], newest first.
+ */
+async function jpListAll() {
+  const out = []
+  for (const type of ['pokemon', 'trainer', 'energy']) {
+    const url = (page) =>
+      `${JP_BASE}/card-search/resultAPI.php?keyword=&se_ta=${type}&regulation_sidebar_form=all&sm_and_keyword=true&page=${page}`
+    const first = await fetchJson(url(1), JP_UA)
+    const maxPage = Number(first.maxPage) || 1
+    console.log(`[jpofficial/${type}] ${first.hitCnt} cards, ${maxPage} pages`)
+    let pages = [first]
+    for (let p = 2; p <= maxPage; p++) {
+      pages.push(await fetchJson(url(p), JP_UA))
+      if (p % 50 === 0) console.log(`  listed page ${p}/${maxPage}`)
+    }
+    for (const pg of pages) {
+      for (const c of pg.cardList ?? []) {
+        const m = /\/card_images\/large\/([^/]+)\//.exec(c.cardThumbFile ?? '')
+        if (!m) continue
+        out.push({
+          srcId: String(c.cardID),
+          name: c.cardNameAltText || c.cardNameViewText || '',
+          setCode: m[1],
+          img: JP_BASE + c.cardThumbFile,
+        })
+      }
+    }
+  }
+  return out
+}
+
+/** Collection number ("081", "183", …) from the card details page. */
+async function jpCardNumber(srcId) {
+  const html = await fetchTextRetry(
+    `${JP_BASE}/card-search/details.php/card/${srcId}/regu/all`,
+    JP_UA,
+  )
+  const m = /&nbsp;([0-9A-Za-z-]+)&nbsp;\/&nbsp;[0-9A-Za-z-]+&nbsp;/.exec(html)
+  return m ? m[1] : null
+}
+
+async function buildJpOfficial(existing) {
+  const matchRe = MATCH ? new RegExp(MATCH) : null
+  const knownSrc = new Set()
+  for (const { entry } of existing.values()) if (entry.srcId) knownSrc.add(entry.srcId)
+
+  const listed = await jpListAll()
+  const todo = listed.filter(
+    (c) => !knownSrc.has(c.srcId) && (!matchRe || matchRe.test(c.setCode)),
+  )
+  console.log(`[jpofficial] ${listed.length} listed, ${todo.length} new to process`)
+
+  let done = 0
+  const queue = [...todo]
+  async function worker() {
+    for (;;) {
+      const item = queue.shift()
+      if (!item) return
+      done++
+      try {
+        const number = await jpCardNumber(item.srcId)
+        const id = number ? `${item.setCode}-${number}` : `${item.setCode}-jp${item.srcId}`
+        const prev = existing.get(id)
+        if (prev) {
+          // Same card already indexed (usually via TCGdex): keep its hash,
+          // just record srcId so the next run skips the details fetch.
+          prev.entry.srcId = item.srcId
+          continue
+        }
+        const buf = await fetchImage(item.img, JP_UA)
+        const hash = await cardHash(buf)
+        existing.set(id, {
+          entry: {
+            id,
+            name: item.name,
+            set: item.setCode,
+            setId: item.setCode,
+            number: number ?? '',
+            lang: 'ja',
+            img: item.img,
+            src: 'jpofficial',
+            srcId: item.srcId,
+          },
+          hash,
+        })
+      } catch (e) {
+        console.warn(`  skip jp:${item.srcId} (${item.setCode} ${item.name}): ${e.message}`)
+      }
+      if (done % 100 === 0) console.log(`  ${done}/${todo.length}`)
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker))
+  console.log(`[jpofficial] done (${done}/${todo.length})`)
 }
 
 /** [{entry, imgUrlForHashing}] for one set. */
@@ -165,19 +287,21 @@ async function main() {
     return
   }
   let sets = SETS
-  if (sets.length === 1 && sets[0] === 'all') {
-    if (SOURCE === 'ptcg') {
-      const data = await fetchJson('https://api.pokemontcg.io/v2/sets?pageSize=250', API_KEY ? { 'X-Api-Key': API_KEY } : {})
-      sets = data.data.map((s) => s.id)
-    } else {
-      const data = await fetchJson(`https://api.tcgdex.net/v2/${LANG}/sets`)
-      sets = data.map((s) => s.id)
+  if (SOURCE !== 'jpofficial') {
+    if (sets.length === 1 && sets[0] === 'all') {
+      if (SOURCE === 'ptcg') {
+        const data = await fetchJson('https://api.pokemontcg.io/v2/sets?pageSize=250', API_KEY ? { 'X-Api-Key': API_KEY } : {})
+        sets = data.data.map((s) => s.id)
+      } else {
+        const data = await fetchJson(`https://api.tcgdex.net/v2/${LANG}/sets`)
+        sets = data.map((s) => s.id)
+      }
+      console.log(`--sets all → ${sets.length} sets`)
     }
-    console.log(`--sets all → ${sets.length} sets`)
-  }
-  if (sets.length === 0) {
-    console.error('No --sets given.')
-    process.exit(1)
+    if (sets.length === 0) {
+      console.error('No --sets given.')
+      process.exit(1)
+    }
   }
 
   await mkdir(OUT, { recursive: true })
@@ -193,6 +317,12 @@ async function main() {
     console.log(`Loaded existing ${LANG} index: ${existing.size} cards`)
   } catch {
     /* fresh index */
+  }
+
+  if (SOURCE === 'jpofficial') {
+    await buildJpOfficial(existing)
+    await writeIndex(existing, metaPath, binPath)
+    return
   }
 
   let setsLoaded = 0
@@ -239,6 +369,10 @@ async function main() {
     process.exit(1)
   }
 
+  await writeIndex(existing, metaPath, binPath)
+}
+
+async function writeIndex(existing, metaPath, binPath) {
   const all = [...existing.values()]
   const bin = new Uint8Array(all.length * 16)
   all.forEach((c, i) => bin.set(c.hash, i * 16))

@@ -56,7 +56,14 @@
 - Live verification: JA リザードンex on production shows Cardmarket (EUR→USD FX), eBay 37 listings with separate Graded variant, JustTCG under Holofoil — all through the worker with zero browser keys. workerUrl set in Randy's Linux Chrome; sync passphrase is Randy's to paste (rotated token, in worker secret SYNC_PASSPHRASE).
 - Codex-loop meta-lessons: verdict all-clears arrive as ISSUE COMMENTS, findings as REVIEWS (watch both); ~10 rounds for distributed-sync code is normal — each round was a real bug; when the same class of finding recurs (KV races ×3), stop patching and change the design (Durable Object).
 
+## 2026-07-13 (later) — pokesearch.site custom domain live
+- Randy bought pokesearch.site (Namecheap) and moved DNS to Cloudflare. GitHub side was done in advance (PR #12): Pages cname via `gh api -X PUT repos/.../pages -f cname=pokesearch.site`, vite `base` → '/' (custom domains serve project sites at the root; old github.io URL 301s), worker ALLOWED_ORIGINS += pokesearch.site/www (worker deploys take ~20s to propagate — a 403 right after deploy is just lag).
+- Nameserver cutover took ~2 days to happen; whois showed keaton/lara.ns.cloudflare.com before recursive resolvers did (old NS delegation stays cached — check whois, not dig, to see whether the registrar change actually landed).
+- Randy set the Cloudflare records PROXIED (orange cloud): apex resolves to CF IPs (104.21/172.67), CF terminates TLS and fronts GitHub Pages. Consequence: GitHub cannot issue its own cert (`https_enforced` PUT → 404 "The certificate does not exist yet"), so HTTPS enforcement has to happen in Cloudflare, not GitHub.
+- Verified live with Playwright: app renders at https://pokesearch.site, EN/JA card data 200, worker CORS OK from the new origin, CF Web Analytics rum beacon 204. The 13 console 404s (ko/zh-tw/de/fr/it/es indexes + favicon) are the pre-existing catalog gaps, not a domain regression.
+
 - Open items:
+  - Randy (Cloudflare dashboard): `http://pokesearch.site` currently serves plaintext with no redirect — turn on SSL/TLS → Edge Certificates → "Always Use HTTPS". For best cert hygiene, grey-cloud the apex record briefly so GitHub issues its Let's Encrypt cert (then `https_enforced=true` works), then re-proxy with SSL mode Full (strict); staying proxied with mode "Full" (non-strict) also works but skips GitHub's cert.
   - Randy: paste sync passphrase into Settings on each device (workerUrl already set on Linux Chrome; other devices need both fields).
   - Randy: PriceCharting Pro sub decision; PokemonPriceTracker + pokemontcg.io accounts still uncreated (worker has slots for their keys: PPT_KEY, PRICECHARTING_KEY).
   - Unused KV namespace 99d3f6644e294d359e94a62cd59ae23b can be deleted (superseded by the Durable Object).

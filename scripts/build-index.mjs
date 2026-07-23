@@ -86,20 +86,36 @@ async function cardHash(buf) {
   return out
 }
 
+// Retry transient failures (network errors, 429 rate limits, 5xx server blips)
+// with exponential backoff — total patience ~30s. A brief upstream outage, e.g.
+// a 500 on the initial /v2/sets call, must not abort the whole nightly refresh.
+// Client errors (4xx other than 429) are permanent, so fail fast rather than
+// burn the retry budget on them.
 async function fetchJson(url, headers = {}) {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const MAX_ATTEMPTS = 5
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const last = attempt === MAX_ATTEMPTS - 1
+    let res
     try {
-      const res = await fetch(url, { headers })
-      if (res.status === 429) {
-        await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)))
-        continue
-      }
-      if (!res.ok) throw new Error(`${res.status} ${url}`)
-      return await res.json()
+      res = await fetch(url, { headers })
     } catch (e) {
-      if (attempt === 2) throw e
-      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
+      // Network-level failure (DNS, connection reset, timeout) — retry.
+      if (last) throw e
+      await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt))
+      continue
     }
+    // Rate limits and server errors are transient — back off and retry.
+    if ((res.status === 429 || res.status >= 500) && !last) {
+      const retryAfter = Number(res.headers.get('retry-after'))
+      const wait = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : 2000 * 2 ** attempt
+      await new Promise((r) => setTimeout(r, wait))
+      continue
+    }
+    // 4xx (and 5xx after the retry budget is spent) are permanent — fail fast.
+    if (!res.ok) throw new Error(`${res.status} ${url}`)
+    return await res.json()
   }
 }
 

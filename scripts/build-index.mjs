@@ -86,6 +86,24 @@ async function cardHash(buf) {
   return out
 }
 
+// Parse a Retry-After header into milliseconds. Per RFC 9110 it may be either
+// delta-seconds ("120") or an HTTP-date ("Thu, 23 Jul 2026 09:18:00 GMT");
+// support both. Capped so a pathological value can't stall the nightly for
+// hours. Returns null when absent/unparseable so the caller uses its backoff.
+function retryAfterMs(res) {
+  const raw = res.headers.get('retry-after')
+  if (!raw) return null
+  let ms
+  const secs = Number(raw)
+  if (Number.isFinite(secs)) ms = secs * 1000
+  else {
+    const when = Date.parse(raw)
+    if (!Number.isFinite(when)) return null
+    ms = when - Date.now()
+  }
+  return Math.min(Math.max(ms, 0), 60_000)
+}
+
 // Retry transient failures (network errors, 429 rate limits, 5xx server blips)
 // with exponential backoff — total patience ~30s. A brief upstream outage, e.g.
 // a 500 on the initial /v2/sets call, must not abort the whole nightly refresh.
@@ -95,27 +113,34 @@ async function fetchJson(url, headers = {}) {
   const MAX_ATTEMPTS = 5
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const last = attempt === MAX_ATTEMPTS - 1
+    const backoff = () => new Promise((r) => setTimeout(r, 2000 * 2 ** attempt))
     let res
     try {
       res = await fetch(url, { headers })
     } catch (e) {
-      // Network-level failure (DNS, connection reset, timeout) — retry.
+      // Failed to establish/hold the connection — retry.
       if (last) throw e
-      await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt))
+      await backoff()
       continue
     }
-    // Rate limits and server errors are transient — back off and retry.
+    // Rate limits and server errors are transient — back off and retry,
+    // honoring Retry-After (seconds or HTTP-date) when the server sends it.
     if ((res.status === 429 || res.status >= 500) && !last) {
-      const retryAfter = Number(res.headers.get('retry-after'))
-      const wait = Number.isFinite(retryAfter) && retryAfter > 0
-        ? retryAfter * 1000
-        : 2000 * 2 ** attempt
-      await new Promise((r) => setTimeout(r, wait))
+      const ra = retryAfterMs(res)
+      await (ra != null ? new Promise((r) => setTimeout(r, ra)) : backoff())
       continue
     }
     // 4xx (and 5xx after the retry budget is spent) are permanent — fail fast.
     if (!res.ok) throw new Error(`${res.status} ${url}`)
-    return await res.json()
+    try {
+      return await res.json()
+    } catch (e) {
+      // Connection reset/truncated while reading the body — fetch() already
+      // resolved, but this is still a network failure, so retry rather than
+      // aborting after one attempt.
+      if (last) throw e
+      await backoff()
+    }
   }
 }
 
